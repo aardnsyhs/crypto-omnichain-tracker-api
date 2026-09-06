@@ -1,8 +1,8 @@
 # Canonical API Contract
 
-**Repository:** `crypto-omnichain-tracker-api`  
-**Contract Version:** 1.0.0  
-**Ownership:** Backend (`crypto-omnichain-tracker-api`) owns this document. Frontend (`crypto-omnichain-tracker-web`) consumes this contract without importing backend source code.  
+**Repository:** `crypto-omnichain-tracker-api`
+**Contract Version:** 1.0.0
+**Ownership:** Backend (`crypto-omnichain-tracker-api`) owns this document. Frontend (`crypto-omnichain-tracker-web`) consumes this contract without importing backend source code.
 **Implementation Status in Milestone 1A:** **Documentation only.** No transaction controllers, routes, DTOs, or services are implemented in the Milestone 1A source code.
 
 ---

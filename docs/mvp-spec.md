@@ -2,8 +2,8 @@
 
 ## Status
 
-**Project:** Crypto Omnichain Transaction Tracker  
-**Status:** Specification ready for implementation planning  
+**Project:** Crypto Omnichain Transaction Tracker
+**Status:** Specification ready for implementation planning
 **Primary goal:** Build a credible, deployed portfolio MVP that demonstrates clean full-stack architecture, external API resilience, Redis cache-aside, observability, and disciplined delivery. Do not claim performance or API savings until measured on real traffic.
 
 ## Product Definition
