@@ -95,6 +95,12 @@ describe('Transactions Lookup Endpoints (e2e)', () => {
   });
 
   afterAll(async () => {
+    try {
+      const cacheService = app.get(CacheService);
+      await cacheService.del(`transaction:v1:ethereum:${ETHEREUM_SUCCESS_HASH.toLowerCase()}`);
+    } catch {
+      // Ignore cleanup error if app failed to init
+    }
     await app.close();
   });
 
