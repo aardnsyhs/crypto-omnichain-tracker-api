@@ -4,6 +4,7 @@
   "testRegex": ".e2e-spec.ts$",
   "extensionsToTreatAsEsm": [".ts"],
   "moduleNameMapper": {
+    "^@nestjs/throttler$": "<rootDir>/mocks/throttler.mock.ts",
     "^(\\.{1,2}/.*)\\.js$": "$1"
   },
   "transform": {
