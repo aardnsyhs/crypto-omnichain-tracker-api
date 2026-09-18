@@ -1,8 +1,12 @@
 import { NestFactory } from '@nestjs/core';
+import cookieParser from 'cookie-parser';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
+
+  const sessionSecret = process.env.SESSION_SECRET || 'dev-insecure-session-secret-change-in-prod';
+  app.use(cookieParser(sessionSecret));
 
   const webOrigin = process.env.WEB_ORIGIN || 'http://localhost:3000';
   app.enableCors({
