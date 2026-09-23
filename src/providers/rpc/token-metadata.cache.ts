@@ -40,9 +40,9 @@ export class TokenMetadataCache {
   set(chain: string, contractAddress: string, data: TokenMetadata): void {
     const key = this.buildKey(chain, contractAddress);
 
-    // If metadata resolution failed completely (both symbol and decimals null),
-    // only cache for degraded TTL (60s) to allow recovery after temporary RPC failures.
-    const isDegraded = data.decimals === null && data.symbol === null;
+    // If metadata retrieval was degraded on any field due to RPC/network failure,
+    // only cache for degraded TTL (60s) to allow recovery after temporary RPC degradation.
+    const isDegraded = data.isDegraded || (data.decimals === null && data.symbol === null);
     const ttlMs = isDegraded ? 60 * 1000 : METADATA_CACHE_TTL_MS;
 
     // Enforce max entries limit (evict oldest)

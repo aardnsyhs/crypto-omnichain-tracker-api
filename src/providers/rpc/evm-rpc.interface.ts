@@ -46,6 +46,8 @@ export interface TokenMetadata {
   symbol: string | null;
   name: string | null;
   decimals: number | null;
+  isDegraded?: boolean;
+  failureReasons?: string[];
 }
 
 export interface RpcEnrichmentData {

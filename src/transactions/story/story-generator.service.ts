@@ -204,16 +204,25 @@ export class StoryGeneratorService {
     if (hasDiscrepancy) {
       coverageReasons.push('provider_discrepancy');
     }
-    if (enrichment.temporaryFailure) {
-      coverageReasons.push('temporary_enrichment_failure');
+    const hasDegradedTokenMetadata = Array.from(enrichment.tokenMetadataMap.values()).some(
+      (m) => m.isDegraded,
+    );
+    if (enrichment.temporaryFailure || hasDegradedTokenMetadata) {
+      if (!coverageReasons.includes('temporary_enrichment_failure')) {
+        coverageReasons.push('temporary_enrichment_failure');
+      }
     }
     if (!enrichment.receipt && resolvedStatus !== 'pending') {
       coverageReasons.push('receipt_unavailable');
     }
 
-    const hasMissingMetadata = decoded.tokenTransfers.some((t) => t.decimals === null);
+    const hasMissingMetadata =
+      decoded.tokenTransfers.some((t) => t.decimals === null) ||
+      decoded.approvals.some((a) => a.decimals === null);
     if (hasMissingMetadata) {
-      coverageReasons.push('metadata_unavailable');
+      if (!coverageReasons.includes('metadata_unavailable')) {
+        coverageReasons.push('metadata_unavailable');
+      }
     }
 
     if (decoded.unrecognizedLogsCount > 0 || decoded.hasNftEvents) {

@@ -56,6 +56,19 @@ export class EvmRpcClient {
 
     const res = await this.http.post<JsonRpcResponse<T>>(rpcUrl, payload);
     if (res.data?.error) {
+      const err = res.data.error;
+      const isTransientRpcError =
+        err.code === 429 ||
+        err.code === -32005 ||
+        err.code === -32603 ||
+        err.message?.toLowerCase().includes('rate limit') ||
+        err.message?.toLowerCase().includes('timeout') ||
+        err.message?.toLowerCase().includes('syncing');
+
+      if (isTransientRpcError) {
+        throw new Error(`RPC transient error: ${err.code} - ${err.message}`);
+      }
+
       this.logger.debug(
         `RPC ${method} error on ${chain}: ${res.data.error.code} - ${res.data.error.message}`,
       );
@@ -173,6 +186,27 @@ export class EvmRpcClient {
       this.ethCall(chain, to, SELECTOR_NAME),
     ]);
 
+    const failureReasons: string[] = [];
+
+    // Distinguish transient network/RPC error from clean contract revert / missing field
+    const decimalsFailed = rawDecimals.status === 'rejected';
+    if (decimalsFailed) {
+      failureReasons.push(`decimals: ${(rawDecimals.reason as Error)?.message || 'call failed'}`);
+    }
+
+    const symbolFailed = rawSymbol.status === 'rejected';
+    if (symbolFailed) {
+      failureReasons.push(`symbol: ${(rawSymbol.reason as Error)?.message || 'call failed'}`);
+    }
+
+    const nameFailed = rawName.status === 'rejected';
+    if (nameFailed) {
+      failureReasons.push(`name: ${(rawName.reason as Error)?.message || 'call failed'}`);
+    }
+
+    // Degraded if ANY field suffered a transient RPC/network failure
+    const isDegraded = decimalsFailed || symbolFailed || nameFailed;
+
     const decimals =
       rawDecimals.status === 'fulfilled' && rawDecimals.value
         ? this.parseUint8(rawDecimals.value)
@@ -192,6 +226,8 @@ export class EvmRpcClient {
       decimals,
       symbol,
       name,
+      isDegraded,
+      failureReasons: failureReasons.length > 0 ? failureReasons : undefined,
     };
   }
 
