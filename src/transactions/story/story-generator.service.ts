@@ -29,8 +29,14 @@ export class StoryGeneratorService {
 
     const hasContractInput = Boolean(enrichment.inputData && enrichment.inputData !== '0x');
 
+    // Definite contract target requires explicit proof:
+    // 1. Contract creation (!baseTx.to)
+    // 2. Receipt emitted logs (only contracts can emit EVM event logs)
+    // 3. Bytecode probe confirmed target is a contract (toIsContract === true)
     const isContractTarget =
-      Boolean(baseTx.to) && (hasContractInput || enrichment.logs.length > 0 || !baseTx.to);
+      !baseTx.to ||
+      enrichment.logs.length > 0 ||
+      enrichment.toIsContract === true;
 
     // 1. Native Value Action
     if (hasNativeValue) {
@@ -55,7 +61,7 @@ export class StoryGeneratorService {
           },
         });
       } else if (isContractTarget) {
-        // Neutral narrative for native value sent to contract / with calldata
+        // Contract confirmed by bytecode or emitted logs
         actions.push({
           type: 'contract_interaction',
           description: `Contract interaction with ${baseTx.value.formatted} ${baseTx.value.symbol} sent to ${baseTx.to}`,
@@ -76,9 +82,10 @@ export class StoryGeneratorService {
           },
         });
       } else {
+        // EOA confirmed or insufficient evidence: use neutral transfer narrative
         actions.push({
           type: 'native_transfer',
-          description: `Sent ${baseTx.value.formatted} ${baseTx.value.symbol} to ${baseTx.to}`,
+          description: `Transferred ${baseTx.value.formatted} ${baseTx.value.symbol} to ${baseTx.to}`,
           actor: baseTx.from,
           recipient: baseTx.to,
           asset: {
@@ -171,9 +178,18 @@ export class StoryGeneratorService {
 
     // 4. Contract interaction fallback action if no actions were recognized but calldata or contract exists
     if (actions.length === 0 && (hasContractInput || isContractTarget)) {
+      let description: string;
+      if (isContractTarget) {
+        description = `Contract interaction with ${baseTx.to || 'contract'} (method calldata not recognized by supported decoders)`;
+      } else if (enrichment.toIsContract === false) {
+        description = `Transaction to ${baseTx.to} with attached data (not recognized by supported decoders)`;
+      } else {
+        description = `Call to ${baseTx.to || 'recipient'} with unrecognized calldata`;
+      }
+
       actions.push({
         type: 'contract_interaction',
-        description: `Contract interaction with ${baseTx.to || 'contract'} (method calldata not recognized by supported decoders)`,
+        description,
         actor: baseTx.from,
         recipient: baseTx.to,
         proof: {
@@ -283,7 +299,13 @@ export class StoryGeneratorService {
             `Interacted with contract ${this.shorten(baseTx.to || '')} with ${baseTx.value.formatted} ${baseTx.value.symbol} attached`,
           );
         } else if (baseTx.to) {
-          narrativeParts.push(`Executed contract interaction with ${this.shorten(baseTx.to)}`);
+          if (isContractTarget) {
+            narrativeParts.push(`Executed contract interaction with ${this.shorten(baseTx.to)}`);
+          } else if (enrichment.toIsContract === false) {
+            narrativeParts.push(`Executed transaction to ${this.shorten(baseTx.to)} with attached data`);
+          } else {
+            narrativeParts.push(`Executed call to ${this.shorten(baseTx.to)} with calldata`);
+          }
         } else {
           narrativeParts.push('Executed transaction on-chain');
         }

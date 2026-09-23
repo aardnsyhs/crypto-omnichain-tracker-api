@@ -9,6 +9,7 @@ describe('EvmRpcService', () => {
     getTransactionReceipt: jest.Mock;
     getTransactionByHash: jest.Mock;
     fetchTokenMetadata: jest.Mock;
+    getCode: jest.Mock;
   };
   let metadataCache: TokenMetadataCache;
 
@@ -17,6 +18,7 @@ describe('EvmRpcService', () => {
       getTransactionReceipt: jest.fn(),
       getTransactionByHash: jest.fn(),
       fetchTokenMetadata: jest.fn(),
+      getCode: jest.fn().mockResolvedValue('0x' as never),
     };
     metadataCache = new TokenMetadataCache();
     service = new EvmRpcService(mockClient as unknown as EvmRpcClient, metadataCache);

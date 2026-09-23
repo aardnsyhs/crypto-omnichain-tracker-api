@@ -15,6 +15,7 @@
 > 1. **Nullable Timestamp:** `data.timestamp` is now typed as `string | null`. Legacy consumers assuming a guaranteed non-null ISO string must be updated to handle `null` when upstream providers report unconfirmed or invalid timestamps.
 > 2. **Status 'unknown':** `data.status` now includes `'unknown'` alongside `'confirmed'`, `'failed'`, and `'pending'`. Consumers must handle `'unknown'` in UI badges and status checks.
 > 3. **Search History Separation:** In `GET /v1/history`, `txStatus` is introduced as `'confirmed' | 'failed' | 'pending' | 'unknown'`. The `outcome` field strictly represents lookup request success (`'success'`, `'not_found'`, etc.), while `txStatus` reflects blockchain execution. Older history records without execution metadata default to `'unknown'`.
+> 4. **Token Metadata Fallback:** When token metadata calls fail or non-standard tokens omit standard methods, `tokenTransfers[].symbol`, `tokenTransfers[].decimals`, `approvals[].symbol`, and `approvals[].decimals` are returned as `null`. Consumers must handle `null` values gracefully and fall back to raw amounts or token address labels.
 
 ---
 

@@ -71,18 +71,33 @@ describe('StoryGeneratorService', () => {
     expect(result.coverage).toBe('partial');
   });
 
-  it('generates neutral narrative for native value sent to smart contract with calldata', () => {
-    const enrichmentWithCalldata: RpcEnrichmentData = {
+  it('generates contract interaction narrative when target is proven contract', () => {
+    const enrichmentContract: RpcEnrichmentData = {
       ...emptyEnrichment,
-      inputData: '0x1234abcd', // contract call
+      inputData: '0x1234abcd',
+      toIsContract: true,
     };
 
-    const result = service.generateStory(baseTxFixture, enrichmentWithCalldata, 'confirmed');
+    const result = service.generateStory(baseTxFixture, enrichmentContract, 'confirmed');
 
-    // Should indicate contract interaction, not a simple peer-to-peer transfer
     const contractAction = result.actions.find((a) => a.type === 'contract_interaction');
     expect(contractAction).toBeDefined();
     expect(contractAction?.description).toContain('Contract interaction with 1 ETH');
+  });
+
+  it('generates neutral narrative for native value transfer when contract is unproven or target is EOA', () => {
+    const enrichmentNeutral: RpcEnrichmentData = {
+      ...emptyEnrichment,
+      inputData: '0x1234abcd', // calldata present but toIsContract is false (e.g. data to EOA)
+      toIsContract: false,
+    };
+
+    const result = service.generateStory(baseTxFixture, enrichmentNeutral, 'confirmed');
+
+    const nativeAction = result.actions.find((a) => a.type === 'native_transfer');
+    expect(nativeAction).toBeDefined();
+    expect(nativeAction?.description).toBe('Transferred 1 ETH to 0x2222222222222222222222222222222222222222');
+    expect(result.explanation).toContain('Transferred 1 ETH from 0x1111...1111 to 0x2222...2222');
   });
 
   it('identifies unsupported contract interaction when no logs or methods are recognized', () => {

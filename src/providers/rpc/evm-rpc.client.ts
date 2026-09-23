@@ -145,6 +145,23 @@ export class EvmRpcClient {
   }
 
   /**
+   * Retrieves the bytecode of an address to verify if it is a smart contract.
+   */
+  async getCode(chain: string, address: string): Promise<string | null> {
+    try {
+      return await this.rpcCall<string>(chain, 'eth_getCode', [
+        address.toLowerCase(),
+        'latest',
+      ]);
+    } catch (err) {
+      this.logger.debug(
+        `Failed to fetch code for ${address}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Fetches decimals, symbol, and name for an ERC-20 token contract via eth_call.
    */
   async fetchTokenMetadata(chain: string, contractAddress: string): Promise<TokenMetadata> {

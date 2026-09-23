@@ -151,8 +151,12 @@ export class TransactionsService {
       const totalDurationMs = Date.now() - startTime;
 
       // 5. Store normalized result in Redis with status-based TTL
-      const hasTemporaryFailure = enrichment.temporaryFailure || hasDiscrepancy;
-      const ttlSeconds = resolveTransactionCacheTtl(resolvedStatus, hasTemporaryFailure);
+      const isDegradedOrTemporaryFailure =
+        enrichment.temporaryFailure ||
+        hasDiscrepancy ||
+        story.coverageReasons.includes('temporary_enrichment_failure') ||
+        story.coverageReasons.includes('metadata_unavailable');
+      const ttlSeconds = resolveTransactionCacheTtl(resolvedStatus, isDegradedOrTemporaryFailure);
 
       if (ttlSeconds > 0) {
         await this.cacheService.set(cacheKey, enrichedData, ttlSeconds);

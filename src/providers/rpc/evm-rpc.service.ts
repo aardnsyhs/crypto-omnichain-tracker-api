@@ -81,6 +81,18 @@ export class EvmRpcService {
     const inputData = tx?.input && tx.input !== '0x' ? tx.input : null;
     const gasUsed = receipt?.gasUsed ? String(BigInt(receipt.gasUsed)) : null;
 
+    // Check if target is a smart contract via bytecode probe
+    const targetAddress = tx?.to || receipt?.to;
+    let toIsContract: boolean | null = null;
+    if (targetAddress) {
+      const code = await this.rpcClient.getCode(chain, targetAddress);
+      if (code !== null) {
+        toIsContract = code !== '0x' && code !== '0x0' && code.length > 2;
+      }
+    } else if (tx && tx.to === null) {
+      toIsContract = true;
+    }
+
     // Discover unique tokens from Transfer and Approval event logs
     const candidateTokens = new Set<string>();
     for (const log of logs) {
@@ -126,6 +138,7 @@ export class EvmRpcService {
       logs,
       tokenMetadataMap,
       temporaryFailure: false,
+      toIsContract,
     };
   }
 }

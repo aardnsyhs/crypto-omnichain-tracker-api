@@ -58,4 +58,5 @@ export interface RpcEnrichmentData {
   tokenMetadataMap: Map<string, TokenMetadata>;
   temporaryFailure: boolean;
   failureReason?: string;
+  toIsContract?: boolean | null;
 }
