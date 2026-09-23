@@ -1,3 +1,4 @@
+import { HttpStatus } from '@nestjs/common';
 import { BlockchairClient } from './blockchair.client';
 import { BlockchairService } from './blockchair.service';
 import {
@@ -71,6 +72,98 @@ describe('BlockchairService Normalization', () => {
     expect(result.value.symbol).toBe('POL');
     expect(result.value.formatted).toBe('10');
     expect(result.explorerUrl).toBe(`https://polygonscan.com/tx/${POLYGON_SUCCESS_HASH}`);
+  });
+
+  it('throws UPSTREAM_PROVIDER_ERROR when response transaction hash does not match requested hash', () => {
+    const mismatchedFixture = {
+      data: {
+        [ETHEREUM_SUCCESS_HASH]: {
+          transaction: {
+            hash: '0x0000000000000000000000000000000000000000000000000000000000009999',
+            sender: '0x1234567890abcdef1234567890abcdef12345678',
+            value: '0',
+            fee: '0',
+            time: '2026-09-01 12:00:00',
+          },
+        },
+      },
+    };
+
+    expect(() =>
+      service.normalizeResponse('ethereum', ETHEREUM_SUCCESS_HASH, mismatchedFixture),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'UPSTREAM_PROVIDER_ERROR',
+        status: HttpStatus.BAD_GATEWAY,
+      }),
+    );
+  });
+
+  it('throws UPSTREAM_PROVIDER_ERROR when payload is missing valid sender', () => {
+    const malformedFixture = {
+      data: {
+        [ETHEREUM_SUCCESS_HASH]: {
+          transaction: {
+            hash: ETHEREUM_SUCCESS_HASH,
+            sender: '', // empty sender
+            value: '0',
+            fee: '0',
+          },
+        },
+      },
+    };
+
+    expect(() =>
+      service.normalizeResponse('ethereum', ETHEREUM_SUCCESS_HASH, malformedFixture),
+    ).toThrowError(
+      expect.objectContaining({
+        code: 'UPSTREAM_PROVIDER_ERROR',
+        status: HttpStatus.BAD_GATEWAY,
+      }),
+    );
+  });
+
+  it('sets timestamp to null instead of defaulting to current time when invalid or missing', () => {
+    const invalidTimeFixture = {
+      data: {
+        [ETHEREUM_SUCCESS_HASH]: {
+          transaction: {
+            hash: ETHEREUM_SUCCESS_HASH,
+            sender: '0x1234567890abcdef1234567890abcdef12345678',
+            value: '0',
+            fee: '0',
+            time: 'invalid-date-string',
+            block_id: 100,
+          },
+        },
+      },
+    };
+
+    const result = service.normalizeResponse('ethereum', ETHEREUM_SUCCESS_HASH, invalidTimeFixture);
+
+    expect(result.timestamp).toBeNull();
+  });
+
+  it('correctly maps status to failed when failed flag or status 0 is present', () => {
+    const failedFixture = {
+      data: {
+        [ETHEREUM_SUCCESS_HASH]: {
+          transaction: {
+            hash: ETHEREUM_SUCCESS_HASH,
+            sender: '0x1234567890abcdef1234567890abcdef12345678',
+            value: '0',
+            fee: '21000',
+            failed: true,
+            status: 0,
+            block_id: 12345,
+          },
+        },
+      },
+    };
+
+    const result = service.normalizeResponse('ethereum', ETHEREUM_SUCCESS_HASH, failedFixture);
+
+    expect(result.status).toBe('failed');
   });
 
   it('throws TRANSACTION_NOT_FOUND on empty data dictionary', () => {

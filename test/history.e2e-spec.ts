@@ -74,6 +74,7 @@ describe('History and Session Endpoints (e2e)', () => {
             transactionHash: data.transactionHash,
             chain: data.chain,
             outcome: data.outcome,
+            txStatus: (data as { txStatus?: string | null }).txStatus ?? null,
             cacheHit: data.cacheHit,
             searchedAt: new Date(),
           };

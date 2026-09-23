@@ -3,13 +3,17 @@ import type { UserSession } from '@prisma/client';
 import * as crypto from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
-import { buildTransactionCacheKey } from '../cache/cache.constants';
+import { buildTransactionCacheKey, resolveTransactionCacheTtl } from '../cache/cache.constants';
 import { BlockchairService } from '../providers/blockchair/blockchair.service';
-import type { NormalizedTransaction } from '../providers/blockchair/blockchair.interface';
+import { EvmRpcService } from '../providers/rpc/evm-rpc.service';
+import { StoryGeneratorService } from './story/story-generator.service';
 import { HistoryService } from '../history/history.service';
 import { ApiException } from '../common/exceptions/api.exception';
 import type { TransactionLookupDto } from './dto/transaction-lookup.dto';
-import type { TransactionLookupResponse } from './dto/transaction-response.dto';
+import type {
+  EnrichedTransactionData,
+  TransactionLookupResponse,
+} from './dto/transaction-response.dto';
 
 @Injectable()
 export class TransactionsService {
@@ -19,15 +23,19 @@ export class TransactionsService {
     private readonly prisma: PrismaService,
     private readonly cacheService: CacheService,
     private readonly blockchairService: BlockchairService,
+    private readonly rpcService: EvmRpcService,
+    private readonly storyGenerator: StoryGeneratorService,
     private readonly historyService: HistoryService,
   ) {}
 
   /**
    * Executes the transaction lookup flow:
-   * 1. Cache-aside check with canonical key format
+   * 1. Cache-aside check with schema validation (bypassed if TTL=0 or invalid shape)
    * 2. Upstream Blockchair fetch on cache miss
-   * 3. Redis cache write on successful lookup
-   * 4. Asynchronous logging of API_REQUEST_LOG and SEARCH_HISTORY
+   * 3. Parallel/graceful EVM RPC enrichment for logs, receipts, and token metadata
+   * 4. Provider reconciliation and deterministic story generation
+   * 5. Status-aware Redis cache write (preserving fetchedAt)
+   * 6. Persistence of API request logs and search history with separated txStatus
    */
   async lookupTransaction(
     dto: TransactionLookupDto,
@@ -42,9 +50,9 @@ export class TransactionsService {
     const endpoint = `/${chain}/dashboards/transaction/${hash}`;
 
     // 1. Check Redis cache-aside
-    const cachedTransaction = await this.cacheService.get<NormalizedTransaction>(cacheKey);
+    const cachedData = await this.cacheService.get<EnrichedTransactionData>(cacheKey);
 
-    if (cachedTransaction) {
+    if (cachedData && this.isValidCachedData(cachedData, hash)) {
       const totalDurationMs = Date.now() - startTime;
       this.logger.debug(`Cache hit for ${cacheKey} in ${totalDurationMs}ms`);
 
@@ -65,12 +73,13 @@ export class TransactionsService {
           transactionHash: hash,
           chain,
           outcome: 'success',
+          txStatus: cachedData.status,
           cacheHit: true,
         });
       }
 
       return {
-        data: cachedTransaction,
+        data: cachedData, // returns preserved fetchedAt as originally stored
         meta: {
           requestId,
           cache: {
@@ -80,13 +89,74 @@ export class TransactionsService {
       };
     }
 
-    // 2. Cache miss -> query Blockchair provider
+    // 2. Cache miss -> query Blockchair and EVM RPC provider
     try {
-      const providerResult = await this.blockchairService.getTransaction(chain, hash);
+      const [providerResult, enrichment] = await Promise.all([
+        this.blockchairService.getTransaction(chain, hash),
+        this.rpcService.enrichTransaction(chain, hash),
+      ]);
+
+      const baseTx = providerResult.transaction;
+
+      // 3. Provider Reconciliation: Detect discrepancies between Blockchair and RPC receipt
+      let resolvedStatus = baseTx.status;
+      let hasDiscrepancy = false;
+
+      if (enrichment.receipt && enrichment.status !== 'unknown') {
+        if (baseTx.status !== 'unknown' && baseTx.status !== enrichment.status) {
+          this.logger.warn(
+            `Status discrepancy for ${hash}: Blockchair=${baseTx.status}, RPC receipt=${enrichment.status}`,
+          );
+          hasDiscrepancy = true;
+          resolvedStatus = 'unknown';
+        } else {
+          resolvedStatus = enrichment.status;
+        }
+      }
+
+      // 4. Generate deterministic Transaction Story
+      const story = this.storyGenerator.generateStory(
+        baseTx,
+        enrichment,
+        resolvedStatus,
+        hasDiscrepancy,
+      );
+
+      const fetchedAt = new Date().toISOString();
+
+      const enrichedData: EnrichedTransactionData = {
+        transactionHash: baseTx.transactionHash,
+        chain: baseTx.chain,
+        status: resolvedStatus,
+        from: baseTx.from,
+        to: baseTx.to,
+        value: baseTx.value,
+        fee: baseTx.fee,
+        blockNumber: baseTx.blockNumber,
+        timestamp: baseTx.timestamp,
+        explorerUrl: baseTx.explorerUrl,
+        fetchedAt,
+        explanation: story.explanation,
+        coverage: story.coverage,
+        coverageReasons: story.coverageReasons,
+        actions: story.actions,
+        tokenTransfers: story.tokenTransfers,
+        approvals: story.approvals,
+        technical: {
+          gasUsed: enrichment.gasUsed,
+          inputData: enrichment.inputData,
+        },
+      };
+
       const totalDurationMs = Date.now() - startTime;
 
-      // 3. Store normalized successful result in Redis
-      await this.cacheService.set(cacheKey, providerResult.transaction);
+      // 5. Store normalized result in Redis with status-based TTL
+      const hasTemporaryFailure = enrichment.temporaryFailure || hasDiscrepancy;
+      const ttlSeconds = resolveTransactionCacheTtl(resolvedStatus, hasTemporaryFailure);
+
+      if (ttlSeconds > 0) {
+        await this.cacheService.set(cacheKey, enrichedData, ttlSeconds);
+      }
 
       // Safe persistence
       void this.safeLogApiRequest({
@@ -105,12 +175,13 @@ export class TransactionsService {
           transactionHash: hash,
           chain,
           outcome: 'success',
+          txStatus: resolvedStatus,
           cacheHit: false,
         });
       }
 
       return {
-        data: providerResult.transaction,
+        data: enrichedData,
         meta: {
           requestId,
           cache: {
@@ -146,12 +217,30 @@ export class TransactionsService {
           transactionHash: hash,
           chain,
           outcome,
+          txStatus: null, // unknown
           cacheHit: false,
         });
       }
 
       throw error;
     }
+  }
+
+  /**
+   * Validates cached data shape to prevent legacy v1 entries from breaking the new response.
+   */
+  private isValidCachedData(data: unknown, expectedHash: string): data is EnrichedTransactionData {
+    if (!data || typeof data !== 'object') return false;
+    const candidate = data as Partial<EnrichedTransactionData>;
+    return Boolean(
+      candidate.transactionHash &&
+      candidate.transactionHash.toLowerCase() === expectedHash.toLowerCase() &&
+      typeof candidate.fetchedAt === 'string' &&
+      typeof candidate.explanation === 'string' &&
+      Array.isArray(candidate.actions) &&
+      Array.isArray(candidate.tokenTransfers) &&
+      candidate.status !== undefined,
+    );
   }
 
   private async safeLogApiRequest(data: {
@@ -189,6 +278,7 @@ export class TransactionsService {
       transactionHash: string;
       chain: string;
       outcome: string;
+      txStatus: 'confirmed' | 'failed' | 'pending' | 'unknown' | null;
       cacheHit: boolean;
     },
   ): Promise<void> {

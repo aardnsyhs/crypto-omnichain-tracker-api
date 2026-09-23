@@ -37,6 +37,13 @@ describe('TransactionsController', () => {
         status: 'confirmed',
         blockNumber: '100',
         timestamp: '2026-09-01T12:00:00Z',
+        fetchedAt: '2026-09-01T12:00:05Z',
+        explanation: 'Transferred 0.000000000000001 ETH from 0xfrom to 0xto.',
+        coverage: 'complete',
+        coverageReasons: [],
+        actions: [],
+        tokenTransfers: [],
+        approvals: [],
         from: '0xfrom',
         to: '0xto',
         value: {

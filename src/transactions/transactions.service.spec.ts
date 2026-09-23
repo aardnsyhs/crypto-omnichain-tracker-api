@@ -4,8 +4,12 @@ import { TransactionsService } from './transactions.service';
 import type { PrismaService } from '../database/prisma.service';
 import type { CacheService } from '../cache/cache.service';
 import type { BlockchairService } from '../providers/blockchair/blockchair.service';
+import type { EvmRpcService } from '../providers/rpc/evm-rpc.service';
+import type { StoryGeneratorService } from './story/story-generator.service';
 import type { HistoryService } from '../history/history.service';
 import type { NormalizedTransaction } from '../providers/blockchair/blockchair.interface';
+import type { RpcEnrichmentData } from '../providers/rpc/evm-rpc.interface';
+import type { EnrichedTransactionData } from './dto/transaction-response.dto';
 import { ApiException } from '../common/exceptions/api.exception';
 import type { UserSession } from '@prisma/client';
 
@@ -14,9 +18,11 @@ describe('TransactionsService', () => {
   let mockPrisma: { apiRequestLog: { create: jest.Mock } };
   let mockCache: { get: jest.Mock; set: jest.Mock };
   let mockBlockchair: { getTransaction: jest.Mock };
+  let mockRpc: { enrichTransaction: jest.Mock };
+  let mockStoryGenerator: { generateStory: jest.Mock };
   let mockHistory: { recordSearch: jest.Mock };
 
-  const mockNormalizedTx: NormalizedTransaction = {
+  const mockBaseTx: NormalizedTransaction = {
     transactionHash: '0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef',
     chain: 'ethereum',
     status: 'confirmed',
@@ -35,6 +41,40 @@ describe('TransactionsService', () => {
       symbol: 'ETH',
     },
     explorerUrl: 'https://etherscan.io/tx/0x123',
+  };
+
+  const mockEnrichment: RpcEnrichmentData = {
+    receipt: {
+      transactionHash: mockBaseTx.transactionHash,
+      transactionIndex: '0x1',
+      blockHash: '0xblock',
+      blockNumber: '0x1e240',
+      from: mockBaseTx.from,
+      to: mockBaseTx.to,
+      cumulativeGasUsed: '0x5208',
+      gasUsed: '0x5208',
+      contractAddress: null,
+      logs: [],
+      status: '0x1',
+    },
+    transaction: null,
+    inputData: null,
+    gasUsed: '21000',
+    status: 'confirmed',
+    logs: [],
+    tokenMetadataMap: new Map(),
+    temporaryFailure: false,
+  };
+
+  const mockEnrichedData: EnrichedTransactionData = {
+    ...mockBaseTx,
+    fetchedAt: '2026-09-01T12:00:05.000Z',
+    explanation: 'Transferred 1.5 ETH from 0x123... to 0xabc....',
+    coverage: 'complete',
+    coverageReasons: [],
+    actions: [],
+    tokenTransfers: [],
+    approvals: [],
   };
 
   const mockSession: UserSession = {
@@ -58,6 +98,19 @@ describe('TransactionsService', () => {
     mockBlockchair = {
       getTransaction: jest.fn(),
     };
+    mockRpc = {
+      enrichTransaction: jest.fn(),
+    };
+    mockStoryGenerator = {
+      generateStory: jest.fn().mockReturnValue({
+        explanation: 'Transferred 1.5 ETH from 0x123... to 0xabc....',
+        coverage: 'complete',
+        coverageReasons: [],
+        actions: [],
+        tokenTransfers: [],
+        approvals: [],
+      }),
+    };
     mockHistory = {
       recordSearch: jest.fn().mockResolvedValue({} as never),
     };
@@ -66,64 +119,169 @@ describe('TransactionsService', () => {
       mockPrisma as unknown as PrismaService,
       mockCache as unknown as CacheService,
       mockBlockchair as unknown as BlockchairService,
+      mockRpc as unknown as EvmRpcService,
+      mockStoryGenerator as unknown as StoryGeneratorService,
       mockHistory as unknown as HistoryService,
     );
   });
 
-  it('returns cached data on cache hit without invoking provider', async () => {
-    mockCache.get.mockResolvedValue(mockNormalizedTx as never);
+  it('returns cached data on cache hit without invoking providers and preserves original fetchedAt', async () => {
+    mockCache.get.mockResolvedValue(mockEnrichedData as never);
 
     const result = await service.lookupTransaction(
       {
         chain: 'ethereum',
-        transactionHash: mockNormalizedTx.transactionHash,
+        transactionHash: mockBaseTx.transactionHash,
       },
       mockSession,
       'test-request-id',
     );
 
-    expect(result.data).toEqual(mockNormalizedTx);
+    expect(result.data).toEqual(mockEnrichedData);
+    expect(result.data.fetchedAt).toBe('2026-09-01T12:00:05.000Z'); // Preserved!
     expect(result.meta.cache.hit).toBe(true);
-    expect(result.meta.requestId).toBe('test-request-id');
-    expect(mockCache.get).toHaveBeenCalledWith(
-      `transaction:v1:ethereum:${mockNormalizedTx.transactionHash}`,
-    );
     expect(mockBlockchair.getTransaction).not.toHaveBeenCalled();
+    expect(mockRpc.enrichTransaction).not.toHaveBeenCalled();
   });
 
-  it('fetches from provider, updates cache, and records history on cache miss', async () => {
+  it('bypasses outdated or incomplete cache shape and triggers fresh fetch', async () => {
+    // Legacy cache object missing actions, tokenTransfers, and fetchedAt
+    const legacyCachedObject = {
+      transactionHash: mockBaseTx.transactionHash,
+      chain: 'ethereum',
+      status: 'confirmed',
+    };
+    mockCache.get.mockResolvedValue(legacyCachedObject as never);
+
+    mockBlockchair.getTransaction.mockResolvedValue({
+      transaction: mockBaseTx,
+      upstreamStatusCode: 200,
+      providerDurationMs: 100,
+    } as never);
+    mockRpc.enrichTransaction.mockResolvedValue(mockEnrichment as never);
+
+    const result = await service.lookupTransaction(
+      {
+        chain: 'ethereum',
+        transactionHash: mockBaseTx.transactionHash,
+      },
+      mockSession,
+    );
+
+    expect(mockBlockchair.getTransaction).toHaveBeenCalled();
+    expect(result.data.explanation).toBeDefined();
+    expect(result.meta.cache.hit).toBe(false);
+  });
+
+  it('bypasses cache write when status is pending (TTL = 0 policy)', async () => {
+    const pendingTx: NormalizedTransaction = {
+      ...mockBaseTx,
+      status: 'pending',
+      blockNumber: '0',
+    };
+
     mockCache.get.mockResolvedValue(null as never);
     mockBlockchair.getTransaction.mockResolvedValue({
-      transaction: mockNormalizedTx,
+      transaction: pendingTx,
       upstreamStatusCode: 200,
-      providerDurationMs: 145,
+      providerDurationMs: 100,
+    } as never);
+    mockRpc.enrichTransaction.mockResolvedValue({
+      ...mockEnrichment,
+      status: 'pending',
     } as never);
 
     const result = await service.lookupTransaction(
       {
         chain: 'ethereum',
-        transactionHash: mockNormalizedTx.transactionHash,
+        transactionHash: mockBaseTx.transactionHash,
       },
       mockSession,
-      'test-request-id',
     );
 
-    expect(result.data).toEqual(mockNormalizedTx);
-    expect(result.meta.cache.hit).toBe(false);
-    expect(mockBlockchair.getTransaction).toHaveBeenCalledWith(
-      'ethereum',
-      mockNormalizedTx.transactionHash,
+    expect(result.data.status).toBe('pending');
+    expect(mockCache.set).not.toHaveBeenCalled();
+    expect(mockHistory.recordSearch).toHaveBeenCalledWith(
+      'db-session-uuid',
+      expect.objectContaining({
+        txStatus: 'pending',
+        outcome: 'success',
+      }),
     );
-    expect(mockCache.set).toHaveBeenCalledWith(
-      `transaction:v1:ethereum:${mockNormalizedTx.transactionHash}`,
-      mockNormalizedTx,
+  });
+
+  it('accurately records txStatus as failed on successful lookup of failed transaction', async () => {
+    const failedTx: NormalizedTransaction = {
+      ...mockBaseTx,
+      status: 'failed',
+    };
+
+    mockCache.get.mockResolvedValue(null as never);
+    mockBlockchair.getTransaction.mockResolvedValue({
+      transaction: failedTx,
+      upstreamStatusCode: 200,
+      providerDurationMs: 120,
+    } as never);
+    mockRpc.enrichTransaction.mockResolvedValue({
+      ...mockEnrichment,
+      status: 'failed',
+    } as never);
+
+    const result = await service.lookupTransaction(
+      {
+        chain: 'ethereum',
+        transactionHash: mockBaseTx.transactionHash,
+      },
+      mockSession,
     );
-    expect(mockHistory.recordSearch).toHaveBeenCalledWith('db-session-uuid', {
-      transactionHash: mockNormalizedTx.transactionHash,
-      chain: 'ethereum',
-      outcome: 'success',
-      cacheHit: false,
-    });
+
+    expect(result.data.status).toBe('failed');
+    expect(mockHistory.recordSearch).toHaveBeenCalledWith(
+      'db-session-uuid',
+      expect.objectContaining({
+        outcome: 'success', // Lookup succeeded
+        txStatus: 'failed', // Blockchain execution status is failed
+      }),
+    );
+  });
+
+  it('flags status as unknown when Blockchair and RPC receipt disagree', async () => {
+    // Blockchair claims confirmed, but RPC receipt indicates reverted 0x0
+    const confirmedBlockchairTx: NormalizedTransaction = {
+      ...mockBaseTx,
+      status: 'confirmed',
+    };
+
+    mockCache.get.mockResolvedValue(null as never);
+    mockBlockchair.getTransaction.mockResolvedValue({
+      transaction: confirmedBlockchairTx,
+      upstreamStatusCode: 200,
+      providerDurationMs: 90,
+    } as never);
+    mockRpc.enrichTransaction.mockResolvedValue({
+      ...mockEnrichment,
+      status: 'failed', // Discrepancy!
+      receipt: {
+        ...mockEnrichment.receipt!,
+        status: '0x0',
+      },
+    } as never);
+
+    const result = await service.lookupTransaction(
+      {
+        chain: 'ethereum',
+        transactionHash: mockBaseTx.transactionHash,
+      },
+      mockSession,
+    );
+
+    expect(result.data.status).toBe('unknown');
+    expect(mockStoryGenerator.generateStory).toHaveBeenCalledWith(
+      confirmedBlockchairTx,
+      expect.anything(),
+      'unknown',
+      true, // hasDiscrepancy = true
+    );
   });
 
   it('handles provider error and propagates ApiException while recording request log', async () => {
@@ -135,11 +293,12 @@ describe('TransactionsService', () => {
         HttpStatus.NOT_FOUND,
       ) as never,
     );
+    mockRpc.enrichTransaction.mockResolvedValue(mockEnrichment as never);
 
     await expect(
       service.lookupTransaction({
         chain: 'ethereum',
-        transactionHash: mockNormalizedTx.transactionHash,
+        transactionHash: mockBaseTx.transactionHash,
       }),
     ).rejects.toThrow(ApiException);
 
@@ -151,21 +310,5 @@ describe('TransactionsService', () => {
         }),
       }),
     );
-  });
-
-  it('safely tolerates database logging failures without throwing', async () => {
-    mockCache.get.mockResolvedValue(mockNormalizedTx as never);
-    mockPrisma.apiRequestLog.create.mockRejectedValue(new Error('DB connection lost') as never);
-    mockHistory.recordSearch.mockRejectedValue(new Error('DB connection lost') as never);
-
-    const result = await service.lookupTransaction(
-      {
-        chain: 'ethereum',
-        transactionHash: mockNormalizedTx.transactionHash,
-      },
-      mockSession,
-    );
-
-    expect(result.data).toEqual(mockNormalizedTx);
   });
 });

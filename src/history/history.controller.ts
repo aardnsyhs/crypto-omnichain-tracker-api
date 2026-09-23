@@ -35,6 +35,7 @@ export class HistoryController {
         transactionHash: record.transactionHash,
         chain: record.chain,
         outcome: record.outcome,
+        txStatus: (record.txStatus as 'confirmed' | 'failed' | 'pending' | 'unknown') ?? 'unknown',
         cacheHit: record.cacheHit,
         searchedAt: record.searchedAt.toISOString(),
       })),

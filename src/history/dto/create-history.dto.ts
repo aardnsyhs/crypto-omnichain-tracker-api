@@ -3,5 +3,6 @@ export interface CreateHistoryDto {
   chain: string;
   outcome:
     'success' | 'not_found' | 'validation_error' | 'upstream_error' | 'rate_limited' | string;
+  txStatus?: 'confirmed' | 'failed' | 'pending' | 'unknown' | null;
   cacheHit: boolean;
 }

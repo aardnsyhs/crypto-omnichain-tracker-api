@@ -101,7 +101,7 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     value: unknown,
     ttlSeconds = getTransactionCacheTtlSeconds(),
   ): Promise<boolean> {
-    if (!this.client || !this.isConnected) {
+    if (!this.client || !this.isConnected || ttlSeconds <= 0) {
       return false;
     }
 

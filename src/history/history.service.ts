@@ -19,6 +19,7 @@ export class HistoryService {
         transactionHash: data.transactionHash.toLowerCase(),
         chain: data.chain.toLowerCase(),
         outcome: data.outcome,
+        txStatus: data.txStatus ?? null,
         cacheHit: data.cacheHit,
       },
     });

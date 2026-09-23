@@ -24,6 +24,7 @@ model SearchHistory {
   transactionHash String      @map("transaction_hash")
   chain           String
   outcome         String
+  txStatus        String?     @map("tx_status")
   cacheHit        Boolean     @map("cache_hit")
   searchedAt      DateTime    @default(now()) @map("searched_at")
 

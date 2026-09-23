@@ -18,6 +18,7 @@ describe('HistoryService', () => {
     transactionHash: '0x' + '1'.repeat(64),
     chain: 'ethereum',
     outcome: 'success',
+    txStatus: 'confirmed',
     cacheHit: true,
     searchedAt: new Date(),
   };
@@ -48,13 +49,14 @@ describe('HistoryService', () => {
   });
 
   describe('recordSearch', () => {
-    it('should normalize and insert a search record scoped to userSessionId', async () => {
+    it('should normalize and insert a search record scoped to userSessionId with txStatus', async () => {
       prisma.searchHistory.create.mockResolvedValue(mockHistoryRecord);
 
       const result = await service.recordSearch(mockHistoryRecord.userSessionId, {
         transactionHash: '0X' + '1'.repeat(64),
         chain: 'ETHEREUM',
         outcome: 'success',
+        txStatus: 'confirmed',
         cacheHit: true,
       });
 
@@ -65,6 +67,7 @@ describe('HistoryService', () => {
           transactionHash: ('0x' + '1'.repeat(64)).toLowerCase(),
           chain: 'ethereum',
           outcome: 'success',
+          txStatus: 'confirmed',
           cacheHit: true,
         },
       });
