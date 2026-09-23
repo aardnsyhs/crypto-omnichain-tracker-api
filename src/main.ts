@@ -1,4 +1,9 @@
-import 'dotenv/config';
+import * as path from 'node:path';
+import * as dotenv from 'dotenv';
+dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';

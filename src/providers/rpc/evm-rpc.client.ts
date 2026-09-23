@@ -126,16 +126,9 @@ export class EvmRpcClient {
     chain: string,
     transactionHash: string,
   ): Promise<RpcTransactionReceipt | null> {
-    try {
-      return await this.rpcCall<RpcTransactionReceipt>(chain, 'eth_getTransactionReceipt', [
-        transactionHash.toLowerCase(),
-      ]);
-    } catch (err) {
-      this.logger.debug(
-        `Failed to fetch transaction receipt for ${transactionHash}: ${(err as Error).message}`,
-      );
-      return null;
-    }
+    return await this.rpcCall<RpcTransactionReceipt>(chain, 'eth_getTransactionReceipt', [
+      transactionHash.toLowerCase(),
+    ]);
   }
 
   /**
@@ -145,16 +138,9 @@ export class EvmRpcClient {
     chain: string,
     transactionHash: string,
   ): Promise<RpcTransaction | null> {
-    try {
-      return await this.rpcCall<RpcTransaction>(chain, 'eth_getTransactionByHash', [
-        transactionHash.toLowerCase(),
-      ]);
-    } catch (err) {
-      this.logger.debug(
-        `Failed to fetch transaction details for ${transactionHash}: ${(err as Error).message}`,
-      );
-      return null;
-    }
+    return await this.rpcCall<RpcTransaction>(chain, 'eth_getTransactionByHash', [
+      transactionHash.toLowerCase(),
+    ]);
   }
 
   /**
@@ -169,6 +155,27 @@ export class EvmRpcClient {
     } catch (err) {
       this.logger.debug(
         `Failed to fetch code for ${address}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Retrieves block header to extract timestamp.
+   */
+  async getBlockByNumber(
+    chain: string,
+    blockNumberHex: string,
+  ): Promise<{ number: string; timestamp: string } | null> {
+    try {
+      return await this.rpcCall<{ number: string; timestamp: string }>(
+        chain,
+        'eth_getBlockByNumber',
+        [blockNumberHex, false],
+      );
+    } catch (err) {
+      this.logger.debug(
+        `Failed to fetch block header for ${blockNumberHex} on ${chain}: ${(err as Error).message}`,
       );
       return null;
     }

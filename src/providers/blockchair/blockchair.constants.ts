@@ -3,12 +3,16 @@ export const DEFAULT_BLOCKCHAIR_TIMEOUT_MS = 5000;
 
 /**
  * Maps internal canonical chain enums to Blockchair URL slugs.
+ * Official Blockchair v2 documentation only supports Ethereum for EVM dashboards.
+ * BSC and Polygon are not supported on api.blockchair.com and use the EVM RPC provider.
  */
 export const CHAIN_TO_BLOCKCHAIR_SLUG: Record<string, string> = {
   ethereum: 'ethereum',
-  bsc: 'binance-smart-chain',
-  polygon: 'polygon',
 };
+
+export function isBlockchairSupportedChain(chain: string): boolean {
+  return Boolean(CHAIN_TO_BLOCKCHAIR_SLUG[chain.toLowerCase()]);
+}
 
 export function getBlockchairSlug(chain: string): string {
   const slug = CHAIN_TO_BLOCKCHAIR_SLUG[chain.toLowerCase()];
@@ -25,3 +29,4 @@ export function getBlockchairBaseUrl(): string {
 export function getBlockchairTimeoutMs(): number {
   return Number(process.env.BLOCKCHAIR_TIMEOUT_MS) || DEFAULT_BLOCKCHAIR_TIMEOUT_MS;
 }
+

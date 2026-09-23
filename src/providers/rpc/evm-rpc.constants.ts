@@ -4,8 +4,8 @@ export const EXPECTED_CHAIN_IDS: Record<string, number> = {
   polygon: 137,
 };
 
-export const DEFAULT_RPC_TIMEOUT_MS = 2000;
-export const TOTAL_ENRICHMENT_DEADLINE_MS = 3500;
+export const DEFAULT_RPC_TIMEOUT_MS = 8000;
+export const TOTAL_ENRICHMENT_DEADLINE_MS = 15000;
 export const MAX_METADATA_CONCURRENCY = 3;
 export const METADATA_CACHE_MAX_ENTRIES = 500;
 export const METADATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours

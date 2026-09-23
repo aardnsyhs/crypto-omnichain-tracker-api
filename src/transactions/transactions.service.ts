@@ -5,7 +5,10 @@ import { PrismaService } from '../database/prisma.service';
 import { CacheService } from '../cache/cache.service';
 import { buildTransactionCacheKey, resolveTransactionCacheTtl } from '../cache/cache.constants';
 import { BlockchairService } from '../providers/blockchair/blockchair.service';
+import { isBlockchairSupportedChain } from '../providers/blockchair/blockchair.constants';
+import type { NormalizedTransaction } from '../providers/blockchair/blockchair.interface';
 import { EvmRpcService } from '../providers/rpc/evm-rpc.service';
+import type { RpcEnrichmentData } from '../providers/rpc/evm-rpc.interface';
 import { StoryGeneratorService } from './story/story-generator.service';
 import { HistoryService } from '../history/history.service';
 import { ApiException } from '../common/exceptions/api.exception';
@@ -89,23 +92,76 @@ export class TransactionsService {
       };
     }
 
-    // 2. Cache miss -> query Blockchair and EVM RPC provider
+    // 2. Cache miss -> query provider (Blockchair for Ethereum with RPC fallback, EVM RPC directly for BSC and Polygon)
     try {
-      const [providerResult, enrichment] = await Promise.all([
-        this.blockchairService.getTransaction(chain, hash),
-        this.rpcService.enrichTransaction(chain, hash),
-      ]);
+      let baseTx: NormalizedTransaction;
+      let providerName = 'blockchair';
+      let upstreamStatusCode: number | null = 200;
+      let providerDurationMs: number | null = null;
+      let enrichment: RpcEnrichmentData;
 
-      const baseTx = providerResult.transaction;
+      if (isBlockchairSupportedChain(chain)) {
+        // Query Blockchair and EVM RPC concurrently for supported chains (Ethereum)
+        const blockchairPromise = this.blockchairService
+          .getTransaction(chain, hash)
+          .then((res) => ({ ok: true as const, res }))
+          .catch((err) => ({ ok: false as const, err }));
 
-      // 3. Provider Reconciliation: Detect discrepancies between Blockchair and RPC receipt
+        const enrichmentPromise = this.rpcService.enrichTransaction(chain, hash);
+
+        const [blockchairResult, rpcEnrichment] = await Promise.all([
+          blockchairPromise,
+          enrichmentPromise,
+        ]);
+
+        enrichment = rpcEnrichment;
+
+        if (blockchairResult.ok) {
+          baseTx = blockchairResult.res.transaction;
+          upstreamStatusCode = blockchairResult.res.upstreamStatusCode;
+          providerDurationMs = blockchairResult.res.providerDurationMs;
+        } else {
+          const err = blockchairResult.err;
+          // If Blockchair says transaction not found and RPC also found nothing -> not found
+          if (
+            err instanceof ApiException &&
+            err.code === 'TRANSACTION_NOT_FOUND' &&
+            !enrichment.transaction &&
+            !enrichment.receipt
+          ) {
+            throw err;
+          }
+
+          // If RPC has on-chain transaction or receipt, gracefully fall back to RPC base transaction
+          if (enrichment.transaction || enrichment.receipt) {
+            this.logger.warn(
+              `Blockchair lookup failed for ${chain}:${hash}, falling back to EVM RPC base transaction: ${err.message}`,
+            );
+            baseTx = this.rpcService.createBaseTransaction(chain, hash, enrichment);
+            providerName = 'evm_rpc';
+            upstreamStatusCode = 200;
+          } else {
+            // Rethrow original provider error
+            throw err;
+          }
+        }
+      } else {
+        // Direct EVM RPC provider for chains not supported by Blockchair (BSC, Polygon)
+        providerName = 'evm_rpc';
+        const rpcStartTime = Date.now();
+        enrichment = await this.rpcService.enrichTransaction(chain, hash);
+        providerDurationMs = Date.now() - rpcStartTime;
+        baseTx = this.rpcService.createBaseTransaction(chain, hash, enrichment);
+      }
+
+      // 3. Provider Reconciliation: Detect discrepancies between baseTx and RPC receipt
       let resolvedStatus = baseTx.status;
       let hasDiscrepancy = false;
 
       if (enrichment.receipt && enrichment.status !== 'unknown') {
         if (baseTx.status !== 'unknown' && baseTx.status !== enrichment.status) {
           this.logger.warn(
-            `Status discrepancy for ${hash}: Blockchair=${baseTx.status}, RPC receipt=${enrichment.status}`,
+            `Status discrepancy for ${hash}: baseTx=${baseTx.status}, RPC receipt=${enrichment.status}`,
           );
           hasDiscrepancy = true;
           resolvedStatus = 'unknown';
@@ -171,10 +227,11 @@ export class TransactionsService {
         requestId,
         endpoint,
         chain,
+        provider: providerName,
         cacheOutcome: 'miss',
-        upstreamStatusCode: providerResult.upstreamStatusCode,
+        upstreamStatusCode,
         totalDurationMs,
-        providerDurationMs: providerResult.providerDurationMs,
+        providerDurationMs,
         outcome: 'success',
       });
 
@@ -213,6 +270,7 @@ export class TransactionsService {
         requestId,
         endpoint,
         chain,
+        provider: isBlockchairSupportedChain(chain) ? 'blockchair' : 'evm_rpc',
         cacheOutcome: 'miss',
         upstreamStatusCode: error instanceof ApiException ? error.getStatus() : null,
         totalDurationMs,
@@ -255,6 +313,7 @@ export class TransactionsService {
     requestId: string;
     endpoint: string;
     chain: string;
+    provider?: string;
     cacheOutcome: string;
     upstreamStatusCode: number | null;
     totalDurationMs: number;
@@ -265,7 +324,7 @@ export class TransactionsService {
       await this.prisma.apiRequestLog.create({
         data: {
           requestId: data.requestId,
-          provider: 'blockchair',
+          provider: data.provider || 'blockchair',
           endpoint: data.endpoint,
           chain: data.chain,
           cacheOutcome: data.cacheOutcome,

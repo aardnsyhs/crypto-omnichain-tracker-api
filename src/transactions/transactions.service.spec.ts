@@ -18,7 +18,7 @@ describe('TransactionsService', () => {
   let mockPrisma: { apiRequestLog: { create: jest.Mock } };
   let mockCache: { get: jest.Mock; set: jest.Mock };
   let mockBlockchair: { getTransaction: jest.Mock };
-  let mockRpc: { enrichTransaction: jest.Mock };
+  let mockRpc: { enrichTransaction: jest.Mock; createBaseTransaction: jest.Mock };
   let mockStoryGenerator: { generateStory: jest.Mock };
   let mockHistory: { recordSearch: jest.Mock };
 
@@ -100,6 +100,7 @@ describe('TransactionsService', () => {
     };
     mockRpc = {
       enrichTransaction: jest.fn(),
+      createBaseTransaction: jest.fn(),
     };
     mockStoryGenerator = {
       generateStory: jest.fn().mockReturnValue({
@@ -293,7 +294,11 @@ describe('TransactionsService', () => {
         HttpStatus.NOT_FOUND,
       ) as never,
     );
-    mockRpc.enrichTransaction.mockResolvedValue(mockEnrichment as never);
+    mockRpc.enrichTransaction.mockResolvedValue({
+      ...mockEnrichment,
+      transaction: null,
+      receipt: null,
+    } as never);
 
     await expect(
       service.lookupTransaction({
@@ -307,6 +312,76 @@ describe('TransactionsService', () => {
         data: expect.objectContaining({
           outcome: 'not_found',
           cacheOutcome: 'miss',
+        }),
+      }),
+    );
+  });
+
+  it('looks up BSC transaction directly via EVM RPC adapter without calling Blockchair', async () => {
+    const bscTx: NormalizedTransaction = {
+      ...mockBaseTx,
+      chain: 'bsc',
+      value: { raw: '1000000000000000000', formatted: '1.0', symbol: 'BNB' },
+      fee: { raw: '100000000000000', formatted: '0.0001', symbol: 'BNB' },
+    };
+
+    mockCache.get.mockResolvedValue(null as never);
+    mockRpc.enrichTransaction.mockResolvedValue(mockEnrichment as never);
+    mockRpc.createBaseTransaction.mockReturnValue(bscTx);
+
+    const result = await service.lookupTransaction(
+      {
+        chain: 'bsc',
+        transactionHash: mockBaseTx.transactionHash,
+      },
+      mockSession,
+    );
+
+    expect(mockBlockchair.getTransaction).not.toHaveBeenCalled();
+    expect(mockRpc.enrichTransaction).toHaveBeenCalledWith('bsc', mockBaseTx.transactionHash);
+    expect(mockRpc.createBaseTransaction).toHaveBeenCalled();
+    expect(result.data.chain).toBe('bsc');
+    expect(mockPrisma.apiRequestLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          provider: 'evm_rpc',
+          chain: 'bsc',
+          outcome: 'success',
+        }),
+      }),
+    );
+  });
+
+  it('looks up Polygon transaction directly via EVM RPC adapter without calling Blockchair', async () => {
+    const polygonTx: NormalizedTransaction = {
+      ...mockBaseTx,
+      chain: 'polygon',
+      value: { raw: '500000000000000000', formatted: '0.5', symbol: 'POL' },
+      fee: { raw: '30000000000000', formatted: '0.00003', symbol: 'POL' },
+    };
+
+    mockCache.get.mockResolvedValue(null as never);
+    mockRpc.enrichTransaction.mockResolvedValue(mockEnrichment as never);
+    mockRpc.createBaseTransaction.mockReturnValue(polygonTx);
+
+    const result = await service.lookupTransaction(
+      {
+        chain: 'polygon',
+        transactionHash: mockBaseTx.transactionHash,
+      },
+      mockSession,
+    );
+
+    expect(mockBlockchair.getTransaction).not.toHaveBeenCalled();
+    expect(mockRpc.enrichTransaction).toHaveBeenCalledWith('polygon', mockBaseTx.transactionHash);
+    expect(mockRpc.createBaseTransaction).toHaveBeenCalled();
+    expect(result.data.chain).toBe('polygon');
+    expect(mockPrisma.apiRequestLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          provider: 'evm_rpc',
+          chain: 'polygon',
+          outcome: 'success',
         }),
       }),
     );

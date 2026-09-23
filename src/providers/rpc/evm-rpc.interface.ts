@@ -61,4 +61,5 @@ export interface RpcEnrichmentData {
   temporaryFailure: boolean;
   failureReason?: string;
   toIsContract?: boolean | null;
+  blockTimestamp?: string | null;
 }

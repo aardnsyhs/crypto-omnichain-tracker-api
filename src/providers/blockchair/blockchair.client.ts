@@ -72,8 +72,27 @@ export class BlockchairClient {
           );
         }
 
-        // Map 404 to TRANSACTION_NOT_FOUND
+        // Map 404: Distinguish upstream route/provider 404 (e.g. HTML) from true JSON 404
         if (status === 404) {
+          const contentType = String(axiosErr.response?.headers?.['content-type'] || '');
+          const responseData = axiosErr.response?.data;
+          const isHtml =
+            typeof responseData === 'string' &&
+            (responseData.includes('<!DOCTYPE') ||
+              responseData.includes('<html') ||
+              responseData.includes('Page Not Found'));
+
+          if (isHtml || (!contentType.includes('application/json') && contentType !== '')) {
+            this.logger.warn(
+              `Blockchair upstream route not found or invalid (HTTP 404 HTML) on ${endpoint}`,
+            );
+            throw new ApiException(
+              'UPSTREAM_PROVIDER_ERROR',
+              'Upstream provider route is invalid or unsupported.',
+              HttpStatus.BAD_GATEWAY,
+            );
+          }
+
           throw new ApiException(
             'TRANSACTION_NOT_FOUND',
             'The transaction hash does not exist or has not been confirmed on the chosen chain.',
