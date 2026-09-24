@@ -5,8 +5,13 @@ import {
   getBlockchairBaseUrl,
   getBlockchairSlug,
   getBlockchairTimeoutMs,
+  isBlockchairSupportedChain,
 } from './blockchair.constants';
-import type { RawBlockchairResponse } from './blockchair.interface';
+import type {
+  RawBlockchairResponse,
+  RawBlockchairStatsResponse,
+  BlockchairStatsFetchResult,
+} from './blockchair.interface';
 
 export interface BlockchairRawFetchResult {
   data: RawBlockchairResponse;
@@ -129,6 +134,79 @@ export class BlockchairClient {
         'Unexpected provider request failure.',
         HttpStatus.BAD_GATEWAY,
       );
+    }
+  }
+
+  /**
+   * Fetches network and market statistics for a supported chain from Blockchair API.
+   * Gracefully returns isRateLimited: true on 402/429 without throwing unhandled exceptions.
+   */
+  async fetchChainStats(chain: string): Promise<BlockchairStatsFetchResult> {
+    if (!isBlockchairSupportedChain(chain)) {
+      return {
+        data: null,
+        statusCode: 404,
+        durationMs: 0,
+        isRateLimited: false,
+      };
+    }
+
+    const slug = getBlockchairSlug(chain);
+    const endpoint = `/${slug}/stats`;
+    const apiKey = process.env.BLOCKCHAIR_API_KEY?.trim();
+
+    const params: Record<string, string> = {};
+    if (apiKey) {
+      params.key = apiKey;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const response = await this.httpClient.get<RawBlockchairStatsResponse>(endpoint, {
+        params,
+      });
+      const durationMs = Date.now() - startTime;
+
+      return {
+        data: response.data?.data ?? null,
+        statusCode: response.status,
+        durationMs,
+        isRateLimited: false,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+
+      if (axios.isAxiosError(error)) {
+        const axiosErr = error as AxiosError;
+        const status = axiosErr.response?.status;
+
+        if (status === 402 || status === 429) {
+          this.logger.warn(`Blockchair stats rate limit or quota exceeded (HTTP ${status}) on ${endpoint}`);
+          return {
+            data: null,
+            statusCode: status,
+            durationMs,
+            isRateLimited: true,
+          };
+        }
+
+        this.logger.warn(`Blockchair stats request error (HTTP ${status ?? 'NONE'}): ${axiosErr.message}`);
+        return {
+          data: null,
+          statusCode: status ?? 500,
+          durationMs,
+          isRateLimited: false,
+        };
+      }
+
+      this.logger.warn(`Unexpected Blockchair stats fetch error: ${(error as Error).message}`);
+      return {
+        data: null,
+        statusCode: 500,
+        durationMs,
+        isRateLimited: false,
+      };
     }
   }
 }

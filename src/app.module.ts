@@ -8,6 +8,7 @@ import { SessionMiddleware } from './sessions/session.middleware';
 import { HistoryModule } from './history/history.module';
 import { CacheModule } from './cache/cache.module';
 import { TransactionsModule } from './transactions/transactions.module';
+import { OverviewModule } from './overview/overview.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { TransactionsModule } from './transactions/transactions.module';
     SessionModule,
     HistoryModule,
     TransactionsModule,
+    OverviewModule,
   ],
   providers: [
     {

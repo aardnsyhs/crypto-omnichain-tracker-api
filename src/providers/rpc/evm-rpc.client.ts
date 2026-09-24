@@ -182,6 +182,41 @@ export class EvmRpcClient {
   }
 
   /**
+   * Retrieves suggested gas price from node (eth_gasPrice).
+   */
+  async getGasPrice(chain: string): Promise<string | null> {
+    try {
+      return await this.rpcCall<string>(chain, 'eth_gasPrice', []);
+    } catch (err) {
+      this.logger.debug(
+        `Failed to fetch gas price on ${chain}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Retrieves the latest block header and suggested gas price.
+   * Guarantees block number and timestamp reference the exact same block.
+   */
+  async getLatestBlockAndGas(chain: string): Promise<{
+    blockNumberHex: string | null;
+    blockTimestampHex: string | null;
+    gasPriceHex: string | null;
+  }> {
+    const [block, gasPriceHex] = await Promise.all([
+      this.getBlockByNumber(chain, 'latest'),
+      this.getGasPrice(chain),
+    ]);
+
+    return {
+      blockNumberHex: block?.number ?? null,
+      blockTimestampHex: block?.timestamp ?? null,
+      gasPriceHex,
+    };
+  }
+
+  /**
    * Fetches decimals, symbol, and name for an ERC-20 token contract via eth_call.
    */
   async fetchTokenMetadata(chain: string, contractAddress: string): Promise<TokenMetadata> {

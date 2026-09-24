@@ -20,6 +20,36 @@ export function formatUnits(rawWei: string | number | bigint, decimals = 18): st
 }
 
 /**
+ * Converts Wei (hex string, decimal string, or bigint) to Gwei using exact 9-decimal string math.
+ * Returns null if input is null, undefined, or invalid. Preserves exact '0' for true zero.
+ */
+export function formatWeiToGwei(
+  rawWeiHexOrDec: string | number | bigint | null | undefined,
+): string | null {
+  if (rawWeiHexOrDec === null || rawWeiHexOrDec === undefined) {
+    return null;
+  }
+
+  const str =
+    typeof rawWeiHexOrDec === 'bigint'
+      ? rawWeiHexOrDec.toString()
+      : String(rawWeiHexOrDec).trim();
+
+  if (!str || str === 'null' || str === 'undefined') {
+    return null;
+  }
+
+  let decStr: string;
+  try {
+    decStr = BigInt(str).toString();
+  } catch {
+    return null;
+  }
+
+  return formatUnits(decStr, 9);
+}
+
+/**
  * Returns native token symbol for supported EVM chains.
  */
 export function getNativeSymbol(chain: string): string {

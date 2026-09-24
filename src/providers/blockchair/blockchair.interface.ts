@@ -41,6 +41,35 @@ export interface NormalizedTransaction {
   explorerUrl: string;
 }
 
+export interface RawBlockchairStats {
+  best_block_height?: number | null;
+  best_block_time?: string | null;
+  market_price_usd?: number | null;
+  market_price_usd_change_24h_percentage?: number | null;
+  suggested_transaction_fee_gwei_options?: {
+    sloth?: number;
+    slow?: number;
+    normal?: number;
+    fast?: number;
+    cheetah?: number;
+  } | null;
+}
+
+export interface RawBlockchairStatsResponse {
+  data?: RawBlockchairStats | null;
+  context?: {
+    code?: number;
+    error?: string | null;
+  } | null;
+}
+
+export interface BlockchairStatsFetchResult {
+  data: RawBlockchairStats | null;
+  statusCode: number;
+  durationMs: number;
+  isRateLimited: boolean;
+}
+
 export interface ProviderResult {
   transaction: NormalizedTransaction;
   upstreamStatusCode: number;
