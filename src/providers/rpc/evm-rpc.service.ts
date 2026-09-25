@@ -84,7 +84,6 @@ export class EvmRpcService {
     const inputData = tx?.input && tx.input !== '0x' ? tx.input : null;
     const gasUsed = receipt?.gasUsed ? String(BigInt(receipt.gasUsed)) : null;
 
-    // Phase 2: In parallel, fetch contract bytecode probe, block timestamp, and token metadata
     const targetAddress = tx?.to || receipt?.to;
     const codePromise = (async (): Promise<boolean | null> => {
       if (targetAddress) {
