@@ -15,7 +15,15 @@ export class TransactionsController {
     @Body() dto: TransactionLookupDto,
     @CurrentSession() session?: UserSession,
     @Headers('x-request-id') requestId?: string,
+    @Headers('x-refresh') refreshHeader?: string,
   ): Promise<TransactionLookupResponse> {
-    return this.transactionsService.lookupTransaction(dto, session, requestId);
+    const isRefresh =
+      dto.refresh === true || refreshHeader === 'true' || refreshHeader === '1';
+    return this.transactionsService.lookupTransaction(
+      isRefresh ? { ...dto, refresh: true } : dto,
+      session,
+      requestId,
+    );
   }
 }
+

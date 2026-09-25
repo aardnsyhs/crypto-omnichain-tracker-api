@@ -1,7 +1,7 @@
-import type { OverviewChain } from '../providers/coingecko/coingecko.constants';
+import type { OverviewChain } from './overview.constants';
 
 export type MarketDataStatus = 'available' | 'stale' | 'rate_limited' | 'unavailable';
-export type NetworkDataStatus = 'available' | 'stale' | 'unavailable';
+export type NetworkDataStatus = 'available' | 'stale' | 'rate_limited' | 'unavailable';
 
 export interface CoinMarketData {
   priceUsd: number | null;
@@ -10,6 +10,7 @@ export interface CoinMarketData {
   updatedAt: string | null;
   isStale: boolean;
   status: MarketDataStatus;
+  reason?: string | null;
 }
 
 export interface ChainNetworkData {
@@ -22,13 +23,15 @@ export interface ChainNetworkData {
   updatedAt: string | null;
   isStale: boolean;
   status: NetworkDataStatus;
+  reason?: string | null;
+  gasNote?: string | null;
 }
 
 export interface NetworkOverviewItem {
   chain: OverviewChain;
   name: string;
   nativeSymbol: string;
-  coinGeckoId: string;
+  coinGeckoId?: string;
   market: CoinMarketData | null;
   network: ChainNetworkData | null;
 }
@@ -41,24 +44,6 @@ export interface OverviewResponse {
   };
 }
 
-export interface CachedMarketEnvelope {
-  data: Record<string, { priceUsd: number | null; change24h: number | null }>;
-  fetchedAt: string;
-  expiresAt: number;
-}
-
-export interface CachedNetworkEnvelope {
-  data: {
-    latestBlockNumber: number | null;
-    latestBlockTimestamp: number | null;
-    blockDate: string | null;
-    suggestedGasPriceWei: string | null;
-    suggestedGasPriceGwei: string | null;
-  };
-  fetchedAt: string;
-  expiresAt: number;
-}
-
 export interface CachedBlockchairStatsEnvelope {
   data: {
     priceUsd: number | null;
@@ -68,6 +53,7 @@ export interface CachedBlockchairStatsEnvelope {
     blockDate: string | null;
     suggestedGasPriceGwei: string | null;
     suggestedGasPriceWei: string | null;
+    gasNote?: string | null;
   };
   fetchedAt: string;
   expiresAt: number;

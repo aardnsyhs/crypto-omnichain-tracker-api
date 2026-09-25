@@ -320,7 +320,16 @@ export class StoryGeneratorService {
         }
       }
 
-      explanation = narrativeParts.join('; ') + '.';
+      if (coverageReasons.includes('receipt_unavailable')) {
+        if (hasNativeValue) {
+          explanation = `Detected 1 transfer of ${baseTx.value.formatted} ${baseTx.value.symbol} from ${this.shorten(baseTx.from)} to ${this.shorten(baseTx.to || '')}. Transaction data is incomplete. Token transfers and approvals may be missing because the receipt could not be retrieved.`;
+        } else {
+          explanation =
+            'Transaction execution confirmed on-chain. Transaction data is incomplete. Token transfers and approvals may be missing because the receipt could not be retrieved.';
+        }
+      } else {
+        explanation = narrativeParts.join('; ') + '.';
+      }
     }
 
     return {

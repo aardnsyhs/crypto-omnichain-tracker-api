@@ -32,7 +32,7 @@ describe('OverviewController', () => {
           market: {
             priceUsd: 2600,
             change24h: 1.2,
-            source: 'CoinGecko',
+            source: 'Blockchair',
             updatedAt: '2026-09-24T12:00:00.000Z',
             isStale: false,
             status: 'available',
@@ -43,7 +43,7 @@ describe('OverviewController', () => {
             blockDate: '2026-09-24T12:00:00.000Z',
             suggestedGasPriceWei: '366270253',
             suggestedGasPriceGwei: '0.366270253',
-            source: 'EVM RPC',
+            source: 'Blockchair',
             updatedAt: '2026-09-24T12:00:00.000Z',
             isStale: false,
             status: 'available',

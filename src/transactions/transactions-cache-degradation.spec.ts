@@ -46,64 +46,72 @@ describe('Transaction Cache & Metadata Degradation Recovery (Regression Test)', 
   };
 
   beforeEach(() => {
-    jest.useFakeTimers();
-  });
-
-  afterEach(() => {
     jest.useRealTimers();
   });
 
   it('TokenMetadataCache correctly uses 60s degraded TTL for single-field transient failure and expires after 60s', () => {
-    const cache = new TokenMetadataCache();
+    jest.useFakeTimers();
+    try {
+      const cache = new TokenMetadataCache();
 
-    // Partial failure: symbol resolved successfully, but decimals failed due to transient error
-    cache.set('ethereum', tokenContract, {
-      contractAddress: tokenContract,
-      chain: 'ethereum',
-      symbol: 'USDC',
-      name: 'USD Coin',
-      decimals: null,
-      isDegraded: true,
-      failureReasons: ['decimals: RPC connection timeout'],
-    });
+      // Partial failure: symbol resolved successfully, but decimals failed due to transient error
+      cache.set('ethereum', tokenContract, {
+        contractAddress: tokenContract,
+        chain: 'ethereum',
+        symbol: 'USDC',
+        name: 'USD Coin',
+        decimals: null,
+        isDegraded: true,
+        failureReasons: ['decimals: RPC connection timeout'],
+      });
 
-    // 1. Immediately available
-    expect(cache.get('ethereum', tokenContract)).not.toBeNull();
-    expect(cache.get('ethereum', tokenContract)?.symbol).toBe('USDC');
-    expect(cache.get('ethereum', tokenContract)?.decimals).toBeNull();
+      // 1. Immediately available
+      expect(cache.get('ethereum', tokenContract)).not.toBeNull();
+      expect(cache.get('ethereum', tokenContract)?.symbol).toBe('USDC');
+      expect(cache.get('ethereum', tokenContract)?.decimals).toBeNull();
 
-    // 2. Advance time by 30 seconds (still within degraded TTL)
-    jest.advanceTimersByTime(30 * 1000);
-    expect(cache.get('ethereum', tokenContract)).not.toBeNull();
+      // 2. Advance time by 30 seconds (still within degraded TTL)
+      jest.advanceTimersByTime(30 * 1000);
+      expect(cache.get('ethereum', tokenContract)).not.toBeNull();
 
-    // 3. Advance time past degraded TTL (60s total + 1s = 61s)
-    jest.advanceTimersByTime(31 * 1000);
-    expect(cache.get('ethereum', tokenContract)).toBeNull(); // Expired! Does not persist for 24h
+      // 3. Advance time past degraded TTL (60s total + 1s = 61s)
+      jest.advanceTimersByTime(31 * 1000);
+      expect(cache.get('ethereum', tokenContract)).toBeNull(); // Expired! Does not persist for 24h
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('TokenMetadataCache preserves complete metadata (non-degraded) for 24 hours', () => {
-    const cache = new TokenMetadataCache();
+    jest.useFakeTimers();
+    try {
+      const cache = new TokenMetadataCache();
 
-    // Clean metadata: decimals: 0 (valid zero decimals) and symbol: 'TOKEN'
-    cache.set('ethereum', tokenContract, {
-      contractAddress: tokenContract,
-      chain: 'ethereum',
-      symbol: 'TOKEN',
-      name: 'Zero Decimal Token',
-      decimals: 0, // valid 0 decimals
-      isDegraded: false,
-    });
+      // Clean metadata: decimals: 0 (valid zero decimals) and symbol: 'TOKEN'
+      cache.set('ethereum', tokenContract, {
+        contractAddress: tokenContract,
+        chain: 'ethereum',
+        symbol: 'TOKEN',
+        name: 'Zero Decimal Token',
+        decimals: 0, // valid 0 decimals
+        isDegraded: false,
+      });
 
-    // Advance 61 seconds (past degraded TTL)
-    jest.advanceTimersByTime(61 * 1000);
-    // Should still exist because it is non-degraded (24h TTL)
-    expect(cache.get('ethereum', tokenContract)).not.toBeNull();
-    expect(cache.get('ethereum', tokenContract)?.decimals).toBe(0);
+      // Advance 61 seconds (past degraded TTL)
+      jest.advanceTimersByTime(61 * 1000);
+      // Should still exist because it is non-degraded (24h TTL)
+      expect(cache.get('ethereum', tokenContract)).not.toBeNull();
+      expect(cache.get('ethereum', tokenContract)?.decimals).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('End-to-end recovery: transient partial failure is cached with degraded 60s TTL, expires, and fully recovers on subsequent lookup', async () => {
-    // 1. Simulated Redis cache store with expiration tracking
-    const redisStore = new Map<string, { data: unknown; expiresAt: number }>();
+    jest.useFakeTimers();
+    try {
+      // 1. Simulated Redis cache store with expiration tracking
+      const redisStore = new Map<string, { data: unknown; expiresAt: number }>();
     const mockCacheService = {
       get: jest.fn(async (key: string) => {
         const entry = redisStore.get(key);
@@ -248,5 +256,349 @@ describe('Transaction Cache & Metadata Degradation Recovery (Regression Test)', 
 
     // Verify memory cache now retains the non-degraded entry for 24h
     expect(metadataCache.get('ethereum', tokenContract)?.decimals).toBe(6);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('assigns 60s degraded TTL when receipt is unavailable, allowing recovery on refresh or after expiry', async () => {
+    const memoryStore = new Map<string, { value: unknown; expiresAt: number }>();
+    const mockCacheService: jest.Mocked<Pick<CacheService, 'get' | 'set' | 'del' | 'isHealthy'>> =
+      {
+        get: jest.fn<(key: string) => Promise<unknown>>().mockImplementation((key: string) => {
+          const item = memoryStore.get(key);
+          if (!item) return Promise.resolve(null);
+          if (Date.now() > item.expiresAt) {
+            memoryStore.delete(key);
+            return Promise.resolve(null);
+          }
+          return Promise.resolve(item.value);
+        }) as unknown as jest.MockedFunction<CacheService['get']>,
+        set: jest
+          .fn<(key: string, val: unknown, ttl: number) => Promise<boolean>>()
+          .mockImplementation((key: string, val: unknown, ttl: number) => {
+            memoryStore.set(key, { value: val, expiresAt: Date.now() + ttl * 1000 });
+            return Promise.resolve(true);
+          }) as unknown as jest.MockedFunction<CacheService['set']>,
+        del: jest.fn<(key: string) => Promise<boolean>>().mockImplementation((key: string) => {
+          memoryStore.delete(key);
+          return Promise.resolve(true);
+        }) as unknown as jest.MockedFunction<CacheService['del']>,
+        isHealthy: jest.fn<() => boolean>().mockReturnValue(true),
+      };
+
+    const nativeTxFixture: NormalizedTransaction = {
+      ...baseTxFixture,
+      to: '0x2222222222222222222222222222222222222222',
+      value: { raw: '1000000000000000000', formatted: '1.0', symbol: 'ETH' },
+    };
+
+    const mockBlockchairService = {
+      getTransaction: jest.fn().mockResolvedValue({
+        transaction: nativeTxFixture,
+        upstreamStatusCode: 200,
+        providerDurationMs: 100,
+      } as never),
+    };
+
+    const mockRpcClient = {
+      getTransactionReceipt: jest.fn(),
+      getTransactionByHash: jest.fn().mockResolvedValue({
+        hash: txHash,
+        from: nativeTxFixture.from,
+        to: nativeTxFixture.to,
+        value: '0xde0b6b3a7640000',
+        input: '0x',
+        blockNumber: '0x18ca4a0',
+        blockHash: '0xabc',
+        gas: '21000',
+        nonce: '0',
+      } as never),
+      getCode: jest.fn().mockResolvedValue('0x' as never), // EOA
+      getBlockByNumber: jest.fn().mockResolvedValue({ number: '0x18ca4a0', timestamp: '0x6ab3a157' } as never),
+      fetchTokenMetadata: jest.fn(),
+      getGasPrice: jest.fn(),
+      getLatestBlockAndGas: jest.fn(),
+    };
+
+    const rpcService = new EvmRpcService(
+      mockRpcClient as unknown as EvmRpcClient,
+      new TokenMetadataCache(),
+    );
+    const storyGenerator = new StoryGeneratorService(new EvmLogDecoder());
+    const mockPrisma = {
+      apiRequestLog: { create: jest.fn().mockResolvedValue({} as never) },
+      searchHistory: { create: jest.fn().mockResolvedValue({} as never) },
+    };
+    const mockHistory = { recordSearch: jest.fn().mockResolvedValue({} as never) };
+
+    const transactionsService = new TransactionsService(
+      mockPrisma as unknown as PrismaService,
+      mockCacheService as unknown as CacheService,
+      mockBlockchairService as unknown as BlockchairService,
+      rpcService,
+      storyGenerator,
+      mockHistory as unknown as HistoryService,
+    );
+
+    // FIRST LOOKUP: receipt returns null (temporary outage)
+    mockRpcClient.getTransactionReceipt.mockResolvedValue(null as never);
+
+    const partialResult = await transactionsService.lookupTransaction({
+      chain: 'ethereum',
+      transactionHash: txHash,
+    });
+
+    expect(partialResult.data.coverageReasons).toContain('receipt_unavailable');
+    expect(partialResult.data.coverage).toBe('partial');
+    expect(partialResult.data.explanation).toContain('Transaction data is incomplete');
+
+    // MUST be cached with degraded 60s TTL, NOT 3600s!
+    expect(mockCacheService.set).toHaveBeenCalledWith(
+      expect.stringContaining(txHash),
+      expect.anything(),
+      DEFAULT_TRANSACTION_CACHE_TTL_DEGRADED, // 60s
+    );
+
+    // Cache hit during degraded window
+    const hitResult = await transactionsService.lookupTransaction({
+      chain: 'ethereum',
+      transactionHash: txHash,
+    });
+    expect(hitResult.meta.cache.hit).toBe(true);
+
+    // Manual / Retry refresh (refresh: true) bypasses cache and re-queries provider
+    mockRpcClient.getTransactionReceipt.mockResolvedValueOnce({
+      transactionHash: txHash,
+      transactionIndex: '0x1',
+      blockHash: '0xabc',
+      blockNumber: '0x18ca4a0',
+      from: nativeTxFixture.from,
+      to: nativeTxFixture.to,
+      cumulativeGasUsed: '21000',
+      gasUsed: '21000',
+      contractAddress: null,
+      logs: [],
+      status: '0x1',
+    } as never);
+
+    const refreshedResult = await transactionsService.lookupTransaction({
+      chain: 'ethereum',
+      transactionHash: txHash,
+      refresh: true,
+    });
+
+    expect(refreshedResult.meta.cache.hit).toBe(false);
+    expect(refreshedResult.data.coverageReasons).not.toContain('receipt_unavailable');
+    expect(refreshedResult.data.coverage).toBe('complete');
+    // Now cached with full 3600s TTL!
+    expect(mockCacheService.set).toHaveBeenLastCalledWith(
+      expect.stringContaining(txHash),
+      expect.anything(),
+      DEFAULT_TRANSACTION_CACHE_TTL_SECONDS, // 3600s
+    );
+  });
+
+  it('enforces monotonicity: poorer degraded response does not overwrite complete cached response for same block', async () => {
+    const memoryStore = new Map<string, unknown>();
+    const mockCacheService: jest.Mocked<Pick<CacheService, 'get' | 'set' | 'del' | 'isHealthy'>> =
+      {
+        get: jest.fn<(key: string) => Promise<unknown>>().mockImplementation((key: string) => {
+          return Promise.resolve(memoryStore.get(key) ?? null);
+        }) as unknown as jest.MockedFunction<CacheService['get']>,
+        set: jest
+          .fn<(key: string, val: unknown, ttl: number) => Promise<boolean>>()
+          .mockImplementation((key: string, val: unknown) => {
+            memoryStore.set(key, val);
+            return Promise.resolve(true);
+          }) as unknown as jest.MockedFunction<CacheService['set']>,
+        del: jest.fn<(key: string) => Promise<boolean>>().mockImplementation((key: string) => {
+          memoryStore.delete(key);
+          return Promise.resolve(true);
+        }) as unknown as jest.MockedFunction<CacheService['del']>,
+        isHealthy: jest.fn<() => boolean>().mockReturnValue(true),
+      };
+
+    const redisKey = `transaction:v2:ethereum:${txHash}`;
+    // Pre-populate cache with complete transaction data for block 26000000
+    memoryStore.set(redisKey, {
+      transactionHash: txHash,
+      chain: 'ethereum',
+      status: 'confirmed',
+      from: baseTxFixture.from,
+      to: baseTxFixture.to,
+      value: baseTxFixture.value,
+      fee: baseTxFixture.fee,
+      blockNumber: '26000000',
+      timestamp: baseTxFixture.timestamp,
+      explorerUrl: baseTxFixture.explorerUrl,
+      fetchedAt: new Date().toISOString(),
+      explanation: 'Transferred 100 USDC to recipient.',
+      coverage: 'complete',
+      coverageReasons: [],
+      actions: [],
+      tokenTransfers: [
+        {
+          tokenAddress: tokenContract,
+          symbol: 'USDC',
+          name: 'USD Coin',
+          decimals: 6,
+          from: baseTxFixture.from,
+          to: baseTxFixture.to || '',
+          rawAmount: '100000000',
+          formattedAmount: '100',
+          logIndex: 1,
+        },
+      ],
+      approvals: [],
+      technical: {
+        gasUsed: '21000',
+        inputData: '0x',
+      },
+    });
+
+    const mockBlockchairService = {
+      getTransaction: jest.fn().mockResolvedValue({
+        transaction: baseTxFixture,
+        upstreamStatusCode: 200,
+        providerDurationMs: 100,
+      } as never),
+    };
+
+    // RPC provider has transient glitch where receipt is null
+    const mockRpcClient = {
+      getTransactionReceipt: jest.fn().mockResolvedValue(null as never),
+      getTransactionByHash: jest.fn().mockResolvedValue({
+        hash: txHash,
+        from: baseTxFixture.from,
+        to: baseTxFixture.to,
+        value: '0',
+        input: '0x',
+        blockNumber: '26000000',
+      } as never),
+      getCode: jest.fn().mockResolvedValue(null as never),
+      getBlockByNumber: jest.fn().mockResolvedValue(null as never),
+      fetchTokenMetadata: jest.fn(),
+      getGasPrice: jest.fn(),
+      getLatestBlockAndGas: jest.fn(),
+    };
+
+    const rpcService = new EvmRpcService(
+      mockRpcClient as unknown as EvmRpcClient,
+      new TokenMetadataCache(),
+    );
+    const storyGenerator = new StoryGeneratorService(new EvmLogDecoder());
+    const mockPrisma = {
+      apiRequestLog: { create: jest.fn().mockResolvedValue({} as never) },
+      searchHistory: { create: jest.fn().mockResolvedValue({} as never) },
+    };
+    const mockHistory = { recordSearch: jest.fn().mockResolvedValue({} as never) };
+
+    const transactionsService = new TransactionsService(
+      mockPrisma as unknown as PrismaService,
+      mockCacheService as unknown as CacheService,
+      mockBlockchairService as unknown as BlockchairService,
+      rpcService,
+      storyGenerator,
+      mockHistory as unknown as HistoryService,
+    );
+
+    // Refresh request triggered while RPC has transient glitch
+    const result = await transactionsService.lookupTransaction({
+      chain: 'ethereum',
+      transactionHash: txHash,
+      refresh: true,
+    });
+
+    // Monotonicity check ensures the existing complete data is preserved!
+    expect(result.data.coverage).toBe('complete');
+    expect(result.data.tokenTransfers).toHaveLength(1);
+    expect(result.data.technical?.gasUsed).toBe('21000');
+  });
+
+  it('valid receipt with empty logs gets complete coverage and 3600s cache TTL', async () => {
+    const mockCacheService: jest.Mocked<Pick<CacheService, 'get' | 'set' | 'del' | 'isHealthy'>> =
+      {
+        get: jest.fn().mockResolvedValue(null as never) as never,
+        set: jest.fn().mockResolvedValue(true as never) as never,
+        del: jest.fn().mockResolvedValue(true as never) as never,
+        isHealthy: jest.fn().mockReturnValue(true as never) as never,
+      };
+
+    const nativeTxFixture: NormalizedTransaction = {
+      ...baseTxFixture,
+      to: '0x2222222222222222222222222222222222222222',
+      value: { raw: '1000000000000000000', formatted: '1.0', symbol: 'ETH' },
+    };
+
+    const mockBlockchairService = {
+      getTransaction: jest.fn().mockResolvedValue({
+        transaction: nativeTxFixture,
+        upstreamStatusCode: 200,
+        providerDurationMs: 100,
+      } as never),
+    };
+
+    const mockRpcClient = {
+      getTransactionReceipt: jest.fn().mockResolvedValue({
+        transactionHash: txHash,
+        transactionIndex: '0x0',
+        blockHash: '0xabc',
+        blockNumber: '26000000',
+        from: nativeTxFixture.from,
+        to: nativeTxFixture.to,
+        cumulativeGasUsed: '21000',
+        gasUsed: '21000',
+        contractAddress: null,
+        logs: [], // Valid empty logs
+        status: '0x1',
+      } as never),
+      getTransactionByHash: jest.fn().mockResolvedValue({
+        hash: txHash,
+        from: nativeTxFixture.from,
+        to: nativeTxFixture.to,
+        value: '0xde0b6b3a7640000',
+        input: '0x',
+        blockNumber: '26000000',
+      } as never),
+      getCode: jest.fn().mockResolvedValue('0x' as never), // EOA, not a contract
+      getBlockByNumber: jest.fn().mockResolvedValue(null as never),
+      fetchTokenMetadata: jest.fn(),
+      getGasPrice: jest.fn(),
+      getLatestBlockAndGas: jest.fn(),
+    };
+
+    const rpcService = new EvmRpcService(
+      mockRpcClient as unknown as EvmRpcClient,
+      new TokenMetadataCache(),
+    );
+    const storyGenerator = new StoryGeneratorService(new EvmLogDecoder());
+    const mockPrisma = {
+      apiRequestLog: { create: jest.fn().mockResolvedValue({} as never) },
+      searchHistory: { create: jest.fn().mockResolvedValue({} as never) },
+    };
+    const mockHistory = { recordSearch: jest.fn().mockResolvedValue({} as never) };
+
+    const transactionsService = new TransactionsService(
+      mockPrisma as unknown as PrismaService,
+      mockCacheService as unknown as CacheService,
+      mockBlockchairService as unknown as BlockchairService,
+      rpcService,
+      storyGenerator,
+      mockHistory as unknown as HistoryService,
+    );
+
+    const result = await transactionsService.lookupTransaction({
+      chain: 'ethereum',
+      transactionHash: txHash,
+    });
+
+    expect(result.data.coverageReasons).not.toContain('receipt_unavailable');
+    expect(result.data.coverage).toBe('complete');
+    expect(mockCacheService.set).toHaveBeenCalledWith(
+      expect.stringContaining(txHash),
+      expect.anything(),
+      DEFAULT_TRANSACTION_CACHE_TTL_SECONDS, // Full 3600s
+    );
   });
 });

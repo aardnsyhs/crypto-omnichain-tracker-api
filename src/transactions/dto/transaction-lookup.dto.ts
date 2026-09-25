@@ -1,4 +1,4 @@
-import { IsNotEmpty, IsString, Matches, IsIn } from 'class-validator';
+import { IsNotEmpty, IsString, Matches, IsIn, IsOptional, IsBoolean } from 'class-validator';
 
 export class TransactionLookupDto {
   @IsNotEmpty({ message: 'chain is required' })
@@ -14,4 +14,9 @@ export class TransactionLookupDto {
     message: 'transactionHash must match 0x followed by 64 hexadecimal characters',
   })
   transactionHash!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  refresh?: boolean;
 }
+

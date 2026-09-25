@@ -88,6 +88,19 @@ describe('StoryGeneratorService', () => {
   it('generates neutral narrative for native value transfer when contract is unproven or target is EOA', () => {
     const enrichmentNeutral: RpcEnrichmentData = {
       ...emptyEnrichment,
+      receipt: {
+        status: '0x1',
+        logs: [],
+        cumulativeGasUsed: '21000',
+        gasUsed: '21000',
+        transactionHash: '0x123',
+        transactionIndex: '0',
+        blockHash: '0x1',
+        blockNumber: '1000',
+        from: '0x1111111111111111111111111111111111111111',
+        to: '0x2222222222222222222222222222222222222222',
+        contractAddress: null,
+      },
       inputData: '0x1234abcd', // calldata present but toIsContract is false (e.g. data to EOA)
       toIsContract: false,
     };
@@ -100,6 +113,24 @@ describe('StoryGeneratorService', () => {
       'Transferred 1 ETH to 0x2222222222222222222222222222222222222222',
     );
     expect(result.explanation).toContain('Transferred 1 ETH from 0x1111...1111 to 0x2222...2222');
+  });
+
+  it('generates partial incomplete narrative when receipt is unavailable for confirmed transaction', () => {
+    const enrichmentNoReceipt: RpcEnrichmentData = {
+      ...emptyEnrichment,
+      receipt: null,
+      inputData: '0x1234abcd',
+      toIsContract: false,
+    };
+
+    const result = service.generateStory(baseTxFixture, enrichmentNoReceipt, 'confirmed');
+
+    expect(result.coverageReasons).toContain('receipt_unavailable');
+    expect(result.coverage).toBe('partial');
+    expect(result.explanation).toContain('Detected 1 transfer of 1 ETH');
+    expect(result.explanation).toContain(
+      'Transaction data is incomplete. Token transfers and approvals may be missing because the receipt could not be retrieved.',
+    );
   });
 
   it('identifies unsupported contract interaction when no logs or methods are recognized', () => {

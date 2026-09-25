@@ -66,10 +66,18 @@ export class EvmRpcService {
     chain: string,
     transactionHash: string,
   ): Promise<RpcEnrichmentData> {
-    const [receipt, tx] = await Promise.all([
+    const [initialReceipt, tx] = await Promise.all([
       this.rpcClient.getTransactionReceipt(chain, transactionHash),
       this.rpcClient.getTransactionByHash(chain, transactionHash),
     ]);
+    let receipt = initialReceipt;
+
+    // If tx has blockNumber (confirmed on-chain) but receipt is null,
+    // retry fetching the receipt once after a brief delay (300ms) to accommodate node lag
+    if (!receipt && tx?.blockNumber && tx.blockNumber !== '0x0') {
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      receipt = await this.rpcClient.getTransactionReceipt(chain, transactionHash);
+    }
 
     let status: 'confirmed' | 'failed' | 'pending' | 'unknown' = 'unknown';
     if (receipt) {
@@ -78,6 +86,16 @@ export class EvmRpcService {
       } else if (receipt.status === '0x0') {
         status = 'failed';
       }
+    }
+
+    const isMined = Boolean(tx?.blockNumber && tx.blockNumber !== '0x0');
+    let temporaryFailure = false;
+    let failureReason: string | undefined;
+
+    if (!receipt && isMined) {
+      temporaryFailure = true;
+      failureReason =
+        'Transaction receipt was not returned by RPC provider for confirmed transaction.';
     }
 
     const logs: RpcLog[] = receipt?.logs ?? [];
@@ -172,7 +190,8 @@ export class EvmRpcService {
       status,
       logs,
       tokenMetadataMap,
-      temporaryFailure: false,
+      temporaryFailure,
+      failureReason,
       toIsContract,
       blockTimestamp,
     };

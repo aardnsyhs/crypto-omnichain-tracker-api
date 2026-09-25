@@ -22,6 +22,9 @@ import type {
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
 
+  // In-flight request deduplication map to prevent concurrent duplicate upstream requests
+  private inFlightLookups = new Map<string, Promise<TransactionLookupResponse>>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly cacheService: CacheService,
@@ -33,14 +36,38 @@ export class TransactionsService {
 
   /**
    * Executes the transaction lookup flow:
-   * 1. Cache-aside check with schema validation (bypassed if TTL=0 or invalid shape)
+   * 1. Cache-aside check with schema validation (bypassed if refresh requested or TTL=0 or invalid shape)
    * 2. Upstream Blockchair fetch on cache miss
    * 3. Parallel/graceful EVM RPC enrichment for logs, receipts, and token metadata
    * 4. Provider reconciliation and deterministic story generation
-   * 5. Status-aware Redis cache write (preserving fetchedAt)
-   * 6. Persistence of API request logs and search history with separated txStatus
+   * 5. Monotonicity validation: Poorer responses do not overwrite more complete data for same block
+   * 6. Status-aware Redis cache write with degraded TTL for partial results
+   * 7. Persistence of API request logs and search history with separated txStatus
    */
   async lookupTransaction(
+    dto: TransactionLookupDto,
+    userSession?: UserSession,
+    customRequestId?: string,
+  ): Promise<TransactionLookupResponse> {
+    const chain = dto.chain.toLowerCase();
+    const hash = dto.transactionHash.toLowerCase();
+    const inFlightKey = `${chain}:${hash}:${Boolean(dto.refresh)}`;
+
+    let promise = this.inFlightLookups.get(inFlightKey);
+    if (!promise) {
+      promise = this.executeLookup(dto, userSession, customRequestId);
+      this.inFlightLookups.set(inFlightKey, promise);
+      promise
+        .catch(() => undefined)
+        .finally(() => {
+          this.inFlightLookups.delete(inFlightKey);
+        });
+    }
+
+    return await promise;
+  }
+
+  private async executeLookup(
     dto: TransactionLookupDto,
     userSession?: UserSession,
     customRequestId?: string,
@@ -51,11 +78,12 @@ export class TransactionsService {
     const hash = dto.transactionHash.toLowerCase();
     const cacheKey = buildTransactionCacheKey(chain, hash);
     const endpoint = `/${chain}/dashboards/transaction/${hash}`;
+    const shouldBypassCache = Boolean(dto.refresh);
 
-    // 1. Check Redis cache-aside
+    // 1. Check Redis cache-aside (bypassed on manual/revalidate refresh)
     const cachedData = await this.cacheService.get<EnrichedTransactionData>(cacheKey);
 
-    if (cachedData && this.isValidCachedData(cachedData, hash)) {
+    if (!shouldBypassCache && cachedData && this.isValidCachedData(cachedData, hash)) {
       const totalDurationMs = Date.now() - startTime;
       this.logger.debug(`Cache hit for ${cacheKey} in ${totalDurationMs}ms`);
 
@@ -214,9 +242,36 @@ export class TransactionsService {
         enrichment.temporaryFailure ||
         hasDiscrepancy ||
         hasDegradedTokenMetadata ||
+        story.coverage === 'partial' ||
+        story.coverageReasons.includes('receipt_unavailable') ||
         story.coverageReasons.includes('temporary_enrichment_failure') ||
         story.coverageReasons.includes('metadata_unavailable');
       const ttlSeconds = resolveTransactionCacheTtl(resolvedStatus, isDegradedOrTemporaryFailure);
+
+      // Monotonicity check: Prevent poorer responses from overwriting more complete responses for the same block
+      const existingCache = await this.cacheService.get<EnrichedTransactionData>(cacheKey);
+      if (existingCache && this.isValidCachedData(existingCache, hash)) {
+        const isSameBlock = String(existingCache.blockNumber) === String(baseTx.blockNumber);
+        const existingIsComplete =
+          existingCache.coverage === 'complete' ||
+          !existingCache.coverageReasons?.includes('receipt_unavailable');
+        const newIsDegraded = story.coverageReasons.includes('receipt_unavailable');
+
+        if (isSameBlock && existingIsComplete && newIsDegraded) {
+          this.logger.warn(
+            `Preventing overwrite of complete cached data with degraded receipt_unavailable response for ${hash} on block #${baseTx.blockNumber}`,
+          );
+          return {
+            data: existingCache,
+            meta: {
+              requestId,
+              cache: {
+                hit: true,
+              },
+            },
+          };
+        }
+      }
 
       if (ttlSeconds > 0) {
         await this.cacheService.set(cacheKey, enrichedData, ttlSeconds);
