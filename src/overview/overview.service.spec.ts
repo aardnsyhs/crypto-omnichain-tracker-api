@@ -9,26 +9,35 @@ import { formatWeiToGwei } from '../common/utils/evm.utils';
 
 describe('OverviewService', () => {
   let service: OverviewService;
-  let coinGeckoClient: { fetchMarketPrices: ReturnType<typeof jest.fn> };
-  let rpcClient: { getLatestBlockAndGas: ReturnType<typeof jest.fn> };
-  let blockchairClient: { fetchChainStats: ReturnType<typeof jest.fn> };
+  let coinGeckoClient: jest.Mocked<Pick<CoinGeckoClient, 'fetchMarketPrices'>>;
+  let rpcClient: jest.Mocked<Pick<EvmRpcClient, 'getLatestBlockAndGas'>>;
+  let blockchairClient: jest.Mocked<Pick<BlockchairClient, 'fetchChainStats'>>;
 
-  const mockCacheStore = new Map<string, any>();
+  const mockCacheStore = new Map<string, unknown>();
 
   beforeEach(async () => {
     mockCacheStore.clear();
 
-    const mockCache = {
-      get: jest.fn().mockImplementation(((key: any) => Promise.resolve(mockCacheStore.get(key) || null)) as any),
-      set: jest.fn().mockImplementation(((key: any, val: any) => {
-        mockCacheStore.set(key, val);
-        return Promise.resolve(true);
-      }) as any),
-      del: jest.fn().mockImplementation(((key: any) => {
-        mockCacheStore.delete(key);
-        return Promise.resolve(true);
-      }) as any),
-      isHealthy: jest.fn().mockReturnValue(true),
+    const mockCache: jest.Mocked<Pick<CacheService, 'get' | 'set' | 'del' | 'isHealthy'>> = {
+      get: jest
+        .fn<(key: string) => Promise<unknown>>()
+        .mockImplementation((key: string) => {
+          const item = mockCacheStore.get(key);
+          return Promise.resolve(item ?? null);
+        }) as unknown as jest.MockedFunction<CacheService['get']>,
+      set: jest
+        .fn<(key: string, val: unknown) => Promise<boolean>>()
+        .mockImplementation((key: string, val: unknown) => {
+          mockCacheStore.set(key, val);
+          return Promise.resolve(true);
+        }) as unknown as jest.MockedFunction<CacheService['set']>,
+      del: jest
+        .fn<(key: string) => Promise<boolean>>()
+        .mockImplementation((key: string) => {
+          mockCacheStore.delete(key);
+          return Promise.resolve(true);
+        }) as unknown as jest.MockedFunction<CacheService['del']>,
+      isHealthy: jest.fn<() => boolean>().mockReturnValue(true),
     };
 
     coinGeckoClient = {

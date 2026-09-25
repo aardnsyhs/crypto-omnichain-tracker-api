@@ -1,12 +1,12 @@
 import { jest } from '@jest/globals';
 import { Test, TestingModule } from '@nestjs/testing';
-import axios from 'axios';
+import axios, { type AxiosError } from 'axios';
 import { CoinGeckoClient } from './coingecko.client';
 import { COINGECKO_COIN_IDS } from './coingecko.constants';
 
 describe('CoinGeckoClient', () => {
   let client: CoinGeckoClient;
-  let mockGet: ReturnType<typeof jest.fn>;
+  let mockGet: jest.Mock<(...args: unknown[]) => Promise<unknown>>;
 
   beforeEach(async () => {
     mockGet = jest.fn();
@@ -16,7 +16,7 @@ describe('CoinGeckoClient', () => {
     }).compile();
 
     client = module.get<CoinGeckoClient>(CoinGeckoClient);
-    (client as any).httpClient = {
+    (client as unknown as { httpClient: { get: typeof mockGet } }).httpClient = {
       get: mockGet,
     };
   });
@@ -118,9 +118,11 @@ describe('CoinGeckoClient', () => {
     };
     mockGet.mockRejectedValueOnce(error429 as never);
 
-    // Mock axios.isAxiosError
-    const originalIsAxiosError = axios.isAxiosError;
-    (axios as any).isAxiosError = (err: any) => err?.isAxiosError === true;
+    const isAxiosErrorSpy = jest
+      .spyOn(axios, 'isAxiosError')
+      .mockImplementation(
+        (err: unknown): err is AxiosError => (err as { isAxiosError?: boolean })?.isAxiosError === true,
+      );
 
     try {
       const result = await client.fetchMarketPrices(['ethereum']);
@@ -129,7 +131,7 @@ describe('CoinGeckoClient', () => {
       expect(result.data).toBeNull();
       expect(result.error).toContain('429');
     } finally {
-      (axios as any).isAxiosError = originalIsAxiosError;
+      isAxiosErrorSpy.mockRestore();
     }
   });
 
@@ -141,8 +143,11 @@ describe('CoinGeckoClient', () => {
     };
     mockGet.mockRejectedValueOnce(networkError as never);
 
-    const originalIsAxiosError = axios.isAxiosError;
-    (axios as any).isAxiosError = (err: any) => err?.isAxiosError === true;
+    const isAxiosErrorSpy = jest
+      .spyOn(axios, 'isAxiosError')
+      .mockImplementation(
+        (err: unknown): err is AxiosError => (err as { isAxiosError?: boolean })?.isAxiosError === true,
+      );
 
     try {
       const result = await client.fetchMarketPrices(['ethereum']);
@@ -151,7 +156,7 @@ describe('CoinGeckoClient', () => {
       expect(result.data).toBeNull();
       expect(result.error).toContain('ECONNREFUSED');
     } finally {
-      (axios as any).isAxiosError = originalIsAxiosError;
+      isAxiosErrorSpy.mockRestore();
     }
   });
 });
