@@ -93,9 +93,7 @@ export class CoinGeckoClient {
           };
         }
 
-        this.logger.warn(
-          `CoinGecko HTTP error: ${status || axiosErr.code} - ${axiosErr.message}`,
-        );
+        this.logger.warn(`CoinGecko HTTP error: ${status || axiosErr.code} - ${axiosErr.message}`);
         return {
           data: null,
           isRateLimited: false,

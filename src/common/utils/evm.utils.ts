@@ -31,9 +31,7 @@ export function formatWeiToGwei(
   }
 
   const str =
-    typeof rawWeiHexOrDec === 'bigint'
-      ? rawWeiHexOrDec.toString()
-      : String(rawWeiHexOrDec).trim();
+    typeof rawWeiHexOrDec === 'bigint' ? rawWeiHexOrDec.toString() : String(rawWeiHexOrDec).trim();
 
   if (!str || str === 'null' || str === 'undefined') {
     return null;

@@ -34,9 +34,7 @@ export class StoryGeneratorService {
     // 2. Receipt emitted logs (only contracts can emit EVM event logs)
     // 3. Bytecode probe confirmed target is a contract (toIsContract === true)
     const isContractTarget =
-      !baseTx.to ||
-      enrichment.logs.length > 0 ||
-      enrichment.toIsContract === true;
+      !baseTx.to || enrichment.logs.length > 0 || enrichment.toIsContract === true;
 
     // 1. Native Value Action
     if (hasNativeValue) {
@@ -311,7 +309,9 @@ export class StoryGeneratorService {
           if (isContractTarget) {
             narrativeParts.push(`Executed contract interaction with ${this.shorten(baseTx.to)}`);
           } else if (enrichment.toIsContract === false) {
-            narrativeParts.push(`Executed transaction to ${this.shorten(baseTx.to)} with attached data`);
+            narrativeParts.push(
+              `Executed transaction to ${this.shorten(baseTx.to)} with attached data`,
+            );
           } else {
             narrativeParts.push(`Executed call to ${this.shorten(baseTx.to)} with calldata`);
           }

@@ -148,14 +148,9 @@ export class EvmRpcClient {
    */
   async getCode(chain: string, address: string): Promise<string | null> {
     try {
-      return await this.rpcCall<string>(chain, 'eth_getCode', [
-        address.toLowerCase(),
-        'latest',
-      ]);
+      return await this.rpcCall<string>(chain, 'eth_getCode', [address.toLowerCase(), 'latest']);
     } catch (err) {
-      this.logger.debug(
-        `Failed to fetch code for ${address}: ${(err as Error).message}`,
-      );
+      this.logger.debug(`Failed to fetch code for ${address}: ${(err as Error).message}`);
       return null;
     }
   }
@@ -188,9 +183,7 @@ export class EvmRpcClient {
     try {
       return await this.rpcCall<string>(chain, 'eth_gasPrice', []);
     } catch (err) {
-      this.logger.debug(
-        `Failed to fetch gas price on ${chain}: ${(err as Error).message}`,
-      );
+      this.logger.debug(`Failed to fetch gas price on ${chain}: ${(err as Error).message}`);
       return null;
     }
   }

@@ -96,7 +96,9 @@ describe('StoryGeneratorService', () => {
 
     const nativeAction = result.actions.find((a) => a.type === 'native_transfer');
     expect(nativeAction).toBeDefined();
-    expect(nativeAction?.description).toBe('Transferred 1 ETH to 0x2222222222222222222222222222222222222222');
+    expect(nativeAction?.description).toBe(
+      'Transferred 1 ETH to 0x2222222222222222222222222222222222222222',
+    );
     expect(result.explanation).toContain('Transferred 1 ETH from 0x1111...1111 to 0x2222...2222');
   });
 

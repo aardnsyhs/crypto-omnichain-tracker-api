@@ -121,7 +121,8 @@ describe('CoinGeckoClient', () => {
     const isAxiosErrorSpy = jest
       .spyOn(axios, 'isAxiosError')
       .mockImplementation(
-        (err: unknown): err is AxiosError => (err as { isAxiosError?: boolean })?.isAxiosError === true,
+        (err: unknown): err is AxiosError =>
+          (err as { isAxiosError?: boolean })?.isAxiosError === true,
       );
 
     try {
@@ -146,7 +147,8 @@ describe('CoinGeckoClient', () => {
     const isAxiosErrorSpy = jest
       .spyOn(axios, 'isAxiosError')
       .mockImplementation(
-        (err: unknown): err is AxiosError => (err as { isAxiosError?: boolean })?.isAxiosError === true,
+        (err: unknown): err is AxiosError =>
+          (err as { isAxiosError?: boolean })?.isAxiosError === true,
       );
 
     try {

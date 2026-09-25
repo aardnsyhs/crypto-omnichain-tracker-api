@@ -51,10 +51,7 @@ export class OverviewService {
     isRateLimited: boolean;
   }> | null = null;
 
-  private inFlightNetworkPromises = new Map<
-    string,
-    Promise<CachedNetworkEnvelope | null>
-  >();
+  private inFlightNetworkPromises = new Map<string, Promise<CachedNetworkEnvelope | null>>();
 
   constructor(
     private readonly cacheService: CacheService,
@@ -230,9 +227,7 @@ export class OverviewService {
             // Suggested gas fee from Blockchair is already in Gwei
             const normalGweiNum = raw.suggested_transaction_fee_gwei_options?.normal;
             const suggestedGasPriceGwei =
-              normalGweiNum !== undefined && normalGweiNum !== null
-                ? String(normalGweiNum)
-                : null;
+              normalGweiNum !== undefined && normalGweiNum !== null ? String(normalGweiNum) : null;
             const suggestedGasPriceWei =
               normalGweiNum !== undefined && normalGweiNum !== null
                 ? BigInt(Math.round(normalGweiNum * 1e9)).toString()
@@ -253,11 +248,7 @@ export class OverviewService {
               expiresAt: Date.now() + OVERVIEW_BLOCKCHAIR_CACHE_TTL_SECONDS * 1000,
             };
 
-            await this.cacheService.set(
-              cacheKey,
-              envelope,
-              OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS,
-            );
+            await this.cacheService.set(cacheKey, envelope, OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS);
 
             return { envelope, isRateLimited: false };
           }
@@ -452,11 +443,7 @@ export class OverviewService {
             };
 
             // Store in Redis for max stale duration
-            await this.cacheService.set(
-              cacheKey,
-              envelope,
-              OVERVIEW_NETWORK_MAX_STALE_SECONDS,
-            );
+            await this.cacheService.set(cacheKey, envelope, OVERVIEW_NETWORK_MAX_STALE_SECONDS);
 
             return envelope;
           }

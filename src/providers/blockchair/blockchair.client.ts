@@ -182,7 +182,9 @@ export class BlockchairClient {
         const status = axiosErr.response?.status;
 
         if (status === 402 || status === 429) {
-          this.logger.warn(`Blockchair stats rate limit or quota exceeded (HTTP ${status}) on ${endpoint}`);
+          this.logger.warn(
+            `Blockchair stats rate limit or quota exceeded (HTTP ${status}) on ${endpoint}`,
+          );
           return {
             data: null,
             statusCode: status,
@@ -191,7 +193,9 @@ export class BlockchairClient {
           };
         }
 
-        this.logger.warn(`Blockchair stats request error (HTTP ${status ?? 'NONE'}): ${axiosErr.message}`);
+        this.logger.warn(
+          `Blockchair stats request error (HTTP ${status ?? 'NONE'}): ${axiosErr.message}`,
+        );
         return {
           data: null,
           statusCode: status ?? 500,

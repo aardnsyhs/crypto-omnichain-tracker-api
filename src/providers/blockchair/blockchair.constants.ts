@@ -29,4 +29,3 @@ export function getBlockchairBaseUrl(): string {
 export function getBlockchairTimeoutMs(): number {
   return Number(process.env.BLOCKCHAIR_TIMEOUT_MS) || DEFAULT_BLOCKCHAIR_TIMEOUT_MS;
 }
-
