@@ -28,7 +28,7 @@ describe('OverviewController', () => {
           chain: 'ethereum',
           name: 'Ethereum',
           nativeSymbol: 'ETH',
-          coinGeckoId: 'ethereum',
+          family: 'evm',
           market: {
             priceUsd: 2600,
             change24h: 1.2,
@@ -43,6 +43,8 @@ describe('OverviewController', () => {
             blockDate: '2026-09-24T12:00:00.000Z',
             suggestedGasPriceWei: '366270253',
             suggestedGasPriceGwei: '0.366270253',
+            suggestedFeeRate: '0.366270253',
+            feeUnit: 'Gwei',
             source: 'Blockchair',
             updatedAt: '2026-09-24T12:00:00.000Z',
             isStale: false,

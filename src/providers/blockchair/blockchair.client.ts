@@ -9,12 +9,22 @@ import {
 } from './blockchair.constants';
 import type {
   RawBlockchairResponse,
+  RawBlockchairStats,
   RawBlockchairStatsResponse,
+  RawBlockchairGlobalStatsResponse,
+  RawBlockchairUtxoDashboardResponse,
   BlockchairStatsFetchResult,
+  BlockchairGlobalStatsFetchResult,
 } from './blockchair.interface';
 
 export interface BlockchairRawFetchResult {
   data: RawBlockchairResponse;
+  statusCode: number;
+  durationMs: number;
+}
+
+export interface BlockchairUtxoRawFetchResult {
+  data: RawBlockchairUtxoDashboardResponse;
   statusCode: number;
   durationMs: number;
 }
@@ -32,7 +42,7 @@ export class BlockchairClient {
   }
 
   /**
-   * Fetches raw transaction dashboard from Blockchair API with timeout and error mapping.
+   * Fetches raw transaction dashboard from Blockchair API for EVM (Ethereum).
    */
   async fetchTransaction(
     chain: string,
@@ -62,84 +72,206 @@ export class BlockchairClient {
       };
     } catch (error) {
       const durationMs = Date.now() - startTime;
+      this.handleTransactionAxiosError(error, endpoint, durationMs);
+    }
+  }
+
+  /**
+   * Fetches raw UTXO transaction dashboard from Blockchair API.
+   * Covers Bitcoin, Litecoin, Dogecoin, Bitcoin Cash, and Dash.
+   */
+  async fetchUtxoTransaction(
+    chain: string,
+    transactionHash: string,
+  ): Promise<BlockchairUtxoRawFetchResult> {
+    const slug = getBlockchairSlug(chain);
+    const endpoint = `/${slug}/dashboards/transaction/${transactionHash.toLowerCase()}`;
+    const apiKey = process.env.BLOCKCHAIR_API_KEY?.trim();
+
+    const params: Record<string, string> = {};
+    if (apiKey) {
+      params.key = apiKey;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const response = await this.httpClient.get<RawBlockchairUtxoDashboardResponse>(endpoint, {
+        params,
+      });
+      const durationMs = Date.now() - startTime;
+
+      return {
+        data: response.data,
+        statusCode: response.status,
+        durationMs,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+      this.handleTransactionAxiosError(error, endpoint, durationMs);
+    }
+  }
+
+  /**
+   * Shared error handler for transaction lookups.
+   */
+  private handleTransactionAxiosError(error: unknown, endpoint: string, durationMs: number): never {
+    if (axios.isAxiosError(error)) {
+      const axiosErr = error as AxiosError;
+      const status = axiosErr.response?.status;
+
+      // Rate limit or quota exceeded
+      if (status === 402 || status === 429) {
+        this.logger.warn(`Blockchair rate limit or quota exceeded (HTTP ${status}) on ${endpoint}`);
+        throw new ApiException(
+          'UPSTREAM_RATE_LIMITED',
+          'Upstream provider quota was exhausted.',
+          HttpStatus.SERVICE_UNAVAILABLE,
+        );
+      }
+
+      // Map 404: Distinguish upstream route/provider 404 (e.g. HTML) from true JSON 404
+      if (status === 404) {
+        const contentType = String(axiosErr.response?.headers?.['content-type'] || '');
+        const responseData = axiosErr.response?.data;
+        const isHtml =
+          typeof responseData === 'string' &&
+          (responseData.includes('<!DOCTYPE') ||
+            responseData.includes('<html') ||
+            responseData.includes('Page Not Found'));
+
+        if (isHtml || (!contentType.includes('application/json') && contentType !== '')) {
+          this.logger.warn(
+            `Blockchair upstream route not found or invalid (HTTP 404 HTML) on ${endpoint}`,
+          );
+          throw new ApiException(
+            'UPSTREAM_PROVIDER_ERROR',
+            'Upstream provider route is invalid or unsupported.',
+            HttpStatus.BAD_GATEWAY,
+          );
+        }
+
+        throw new ApiException(
+          'TRANSACTION_NOT_FOUND',
+          'The transaction hash does not exist or has not been confirmed on the chosen chain.',
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      // Timeout mapping
+      if (
+        axiosErr.code === 'ECONNABORTED' ||
+        axiosErr.code === 'ETIMEDOUT' ||
+        axiosErr.message.toLowerCase().includes('timeout')
+      ) {
+        this.logger.warn(`Blockchair request timed out after ${durationMs}ms`);
+        throw new ApiException(
+          'UPSTREAM_TIMEOUT',
+          'Upstream provider request exceeded configured deadline.',
+          HttpStatus.BAD_GATEWAY,
+        );
+      }
+
+      this.logger.warn(
+        `Blockchair upstream provider error (HTTP ${status ?? 'NONE'}): ${axiosErr.message}`,
+      );
+      throw new ApiException(
+        'UPSTREAM_PROVIDER_ERROR',
+        'Blockchair returned an unrecoverable error or invalid payload.',
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+
+    throw new ApiException(
+      'UPSTREAM_PROVIDER_ERROR',
+      'Unexpected provider request failure.',
+      HttpStatus.BAD_GATEWAY,
+    );
+  }
+
+  /**
+   * Fetches global network and market statistics batch from /stats.
+   * Returns a map of slug/chain -> RawBlockchairStats.
+   */
+  async fetchGlobalStats(): Promise<BlockchairGlobalStatsFetchResult> {
+    const endpoint = '/stats';
+    const apiKey = process.env.BLOCKCHAIR_API_KEY?.trim();
+
+    const params: Record<string, string> = {};
+    if (apiKey) {
+      params.key = apiKey;
+    }
+
+    const startTime = Date.now();
+
+    try {
+      const response = await this.httpClient.get<RawBlockchairGlobalStatsResponse>(endpoint, {
+        params,
+      });
+      const durationMs = Date.now() - startTime;
+
+      if (!response.data?.data || typeof response.data.data !== 'object') {
+        return {
+          data: null,
+          statusCode: response.status,
+          durationMs,
+          isRateLimited: false,
+        };
+      }
+
+      const chainMap: Record<string, RawBlockchairStats> = {};
+      for (const [key, value] of Object.entries(response.data.data)) {
+        if (value?.data) {
+          chainMap[key.toLowerCase()] = value.data;
+        }
+      }
+
+      return {
+        data: chainMap,
+        statusCode: response.status,
+        durationMs,
+        isRateLimited: false,
+      };
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
 
       if (axios.isAxiosError(error)) {
         const axiosErr = error as AxiosError;
         const status = axiosErr.response?.status;
 
-        // Approved Decision 2: Map 402 and 429 to 503 UPSTREAM_RATE_LIMITED
         if (status === 402 || status === 429) {
-          this.logger.warn(`Blockchair rate limit or quota exceeded (HTTP ${status})`);
-          throw new ApiException(
-            'UPSTREAM_RATE_LIMITED',
-            'Upstream provider quota was exhausted.',
-            HttpStatus.SERVICE_UNAVAILABLE,
-          );
-        }
-
-        // Map 404: Distinguish upstream route/provider 404 (e.g. HTML) from true JSON 404
-        if (status === 404) {
-          const contentType = String(axiosErr.response?.headers?.['content-type'] || '');
-          const responseData = axiosErr.response?.data;
-          const isHtml =
-            typeof responseData === 'string' &&
-            (responseData.includes('<!DOCTYPE') ||
-              responseData.includes('<html') ||
-              responseData.includes('Page Not Found'));
-
-          if (isHtml || (!contentType.includes('application/json') && contentType !== '')) {
-            this.logger.warn(
-              `Blockchair upstream route not found or invalid (HTTP 404 HTML) on ${endpoint}`,
-            );
-            throw new ApiException(
-              'UPSTREAM_PROVIDER_ERROR',
-              'Upstream provider route is invalid or unsupported.',
-              HttpStatus.BAD_GATEWAY,
-            );
-          }
-
-          throw new ApiException(
-            'TRANSACTION_NOT_FOUND',
-            'The transaction hash does not exist or has not been confirmed on the chosen chain.',
-            HttpStatus.NOT_FOUND,
-          );
-        }
-
-        // Timeout mapping
-        if (
-          axiosErr.code === 'ECONNABORTED' ||
-          axiosErr.code === 'ETIMEDOUT' ||
-          axiosErr.message.toLowerCase().includes('timeout')
-        ) {
-          this.logger.warn(`Blockchair request timed out after ${durationMs}ms`);
-          throw new ApiException(
-            'UPSTREAM_TIMEOUT',
-            'Upstream provider request exceeded configured deadline.',
-            HttpStatus.BAD_GATEWAY,
-          );
+          this.logger.warn(`Blockchair global stats rate limit (HTTP ${status})`);
+          return {
+            data: null,
+            statusCode: status,
+            durationMs,
+            isRateLimited: true,
+          };
         }
 
         this.logger.warn(
-          `Blockchair upstream provider error (HTTP ${status ?? 'NONE'}): ${axiosErr.message}`,
+          `Blockchair global stats request error (HTTP ${status ?? 'NONE'}): ${axiosErr.message}`,
         );
-        throw new ApiException(
-          'UPSTREAM_PROVIDER_ERROR',
-          'Blockchair returned an unrecoverable error or invalid payload.',
-          HttpStatus.BAD_GATEWAY,
-        );
+        return {
+          data: null,
+          statusCode: status ?? 500,
+          durationMs,
+          isRateLimited: false,
+        };
       }
 
-      throw new ApiException(
-        'UPSTREAM_PROVIDER_ERROR',
-        'Unexpected provider request failure.',
-        HttpStatus.BAD_GATEWAY,
-      );
+      this.logger.warn(`Unexpected Blockchair global stats fetch error: ${(error as Error).message}`);
+      return {
+        data: null,
+        statusCode: 500,
+        durationMs,
+        isRateLimited: false,
+      };
     }
   }
 
   /**
-   * Fetches network and market statistics for a supported chain from Blockchair API.
-   * Gracefully returns isRateLimited: true on 402/429 without throwing unhandled exceptions.
+   * Fallback method: Fetches statistics for an individual chain from /{slug}/stats.
    */
   async fetchChainStats(chain: string): Promise<BlockchairStatsFetchResult> {
     if (!isBlockchairSupportedChain(chain)) {
@@ -182,9 +314,7 @@ export class BlockchairClient {
         const status = axiosErr.response?.status;
 
         if (status === 402 || status === 429) {
-          this.logger.warn(
-            `Blockchair stats rate limit or quota exceeded (HTTP ${status}) on ${endpoint}`,
-          );
+          this.logger.warn(`Blockchair stats rate limit (HTTP ${status}) on ${endpoint}`);
           return {
             data: null,
             statusCode: status,

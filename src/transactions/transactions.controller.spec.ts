@@ -34,6 +34,7 @@ describe('TransactionsController', () => {
       data: {
         transactionHash: mockDto.transactionHash.toLowerCase(),
         chain: 'ethereum',
+        family: 'evm',
         status: 'confirmed',
         blockNumber: '100',
         timestamp: '2026-09-01T12:00:00Z',

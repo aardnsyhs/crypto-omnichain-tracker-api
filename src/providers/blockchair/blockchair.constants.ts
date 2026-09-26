@@ -8,6 +8,11 @@ export const DEFAULT_BLOCKCHAIR_TIMEOUT_MS = 5000;
  */
 export const CHAIN_TO_BLOCKCHAIR_SLUG: Record<string, string> = {
   ethereum: 'ethereum',
+  bitcoin: 'bitcoin',
+  litecoin: 'litecoin',
+  dogecoin: 'dogecoin',
+  'bitcoin-cash': 'bitcoin-cash',
+  dash: 'dash',
 };
 
 export function isBlockchairSupportedChain(chain: string): boolean {

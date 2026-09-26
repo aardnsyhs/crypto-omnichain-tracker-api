@@ -49,8 +49,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
               (rawMsg.includes('transactionHash') && !rawMsg.includes('required')))
           ) {
             code = 'INVALID_TRANSACTION_HASH';
-            message =
-              'The provided transaction hash does not match 0x followed by 64 hexadecimal characters.';
+            if (rawMsg.includes('without 0x prefix') || rawMsg.includes('hexadecimal transaction ID')) {
+              message = rawMsg;
+            } else {
+              message =
+                'The provided transaction hash does not match 0x followed by 64 hexadecimal characters.';
+            }
           } else if (
             msgArray.length === 1 &&
             (rawMsg.includes('must be one of') ||
@@ -58,7 +62,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
           ) {
             code = 'UNSUPPORTED_CHAIN';
             message =
-              'The provided chain is not supported. Must be one of: ethereum, bsc, polygon.';
+              'The provided chain is not supported. Must be one of: ethereum, bitcoin, litecoin, dogecoin, bitcoin-cash, dash.';
           } else {
             code = 'VALIDATION_ERROR';
             message = rawMsg || 'Invalid request payload.';

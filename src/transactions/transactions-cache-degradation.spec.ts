@@ -197,8 +197,8 @@ describe('Transaction Cache & Metadata Degradation Recovery (Regression Test)', 
     expect(firstResult.data.coverage).toBe('partial');
     expect(firstResult.data.coverageReasons).toContain('metadata_unavailable');
     expect(firstResult.data.coverageReasons).toContain('temporary_enrichment_failure');
-    expect(firstResult.data.tokenTransfers[0].decimals).toBeNull();
-    expect(firstResult.data.tokenTransfers[0].formattedAmount).toBeNull();
+    expect(firstResult.data.tokenTransfers![0].decimals).toBeNull();
+    expect(firstResult.data.tokenTransfers![0].formattedAmount).toBeNull();
 
     // Verify Redis cache received degraded TTL (60 seconds)
     const redisKey = `transaction:v2:ethereum:${txHash}`;
@@ -242,9 +242,9 @@ describe('Transaction Cache & Metadata Degradation Recovery (Regression Test)', 
     expect(recoveredResult.data.coverage).toBe('complete');
     expect(recoveredResult.data.coverageReasons).not.toContain('metadata_unavailable');
     expect(recoveredResult.data.coverageReasons).not.toContain('temporary_enrichment_failure');
-    expect(recoveredResult.data.tokenTransfers[0].symbol).toBe('USDC');
-    expect(recoveredResult.data.tokenTransfers[0].decimals).toBe(6);
-    expect(recoveredResult.data.tokenTransfers[0].formattedAmount).toBe('100'); // 100.0 USDC decoded!
+    expect(recoveredResult.data.tokenTransfers![0].symbol).toBe('USDC');
+    expect(recoveredResult.data.tokenTransfers![0].decimals).toBe(6);
+    expect(recoveredResult.data.tokenTransfers![0].formattedAmount).toBe('100'); // 100.0 USDC decoded!
     expect(recoveredResult.data.explanation).toContain('Transferred 100 USDC');
 
     // Verify Redis was re-cached with full 3600s TTL!

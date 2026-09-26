@@ -12,6 +12,7 @@ import type { RpcEnrichmentData } from '../providers/rpc/evm-rpc.interface';
 import { StoryGeneratorService } from './story/story-generator.service';
 import { HistoryService } from '../history/history.service';
 import { ApiException } from '../common/exceptions/api.exception';
+import { isUtxoChain } from '../common/constants/network-registry';
 import type { TransactionLookupDto } from './dto/transaction-lookup.dto';
 import type {
   EnrichedTransactionData,
@@ -36,13 +37,12 @@ export class TransactionsService {
 
   /**
    * Executes the transaction lookup flow:
-   * 1. Cache-aside check with schema validation (bypassed if refresh requested or TTL=0 or invalid shape)
-   * 2. Upstream Blockchair fetch on cache miss
-   * 3. Parallel/graceful EVM RPC enrichment for logs, receipts, and token metadata
-   * 4. Provider reconciliation and deterministic story generation
-   * 5. Monotonicity validation: Poorer responses do not overwrite more complete data for same block
-   * 6. Status-aware Redis cache write with degraded TTL for partial results
-   * 7. Persistence of API request logs and search history with separated txStatus
+   * 1. Cache-aside check with schema validation (bypassed if refresh requested)
+   * 2. Multichain router: Dispatches to UTXO pipeline or EVM pipeline
+   * 3. UTXO pipeline: Blockchair UTXO transaction dashboard with exact BigInt satoshi math
+   * 4. EVM pipeline: Blockchair + RPC fallback, receipt enrichment, and story generation
+   * 5. Monotonicity validation & status-aware Redis caching
+   * 6. Search history and API logging
    */
   async lookupTransaction(
     dto: TransactionLookupDto,
@@ -87,7 +87,6 @@ export class TransactionsService {
       const totalDurationMs = Date.now() - startTime;
       this.logger.debug(`Cache hit for ${cacheKey} in ${totalDurationMs}ms`);
 
-      // Safe persistence of request log and search history
       void this.safeLogApiRequest({
         requestId,
         endpoint,
@@ -110,7 +109,7 @@ export class TransactionsService {
       }
 
       return {
-        data: cachedData, // returns preserved fetchedAt as originally stored
+        data: cachedData,
         meta: {
           requestId,
           cache: {
@@ -120,7 +119,173 @@ export class TransactionsService {
       };
     }
 
-    // 2. Cache miss -> query provider (Blockchair for Ethereum with RPC fallback, EVM RPC directly for BSC and Polygon)
+    // 2. Multichain Pipeline Dispatch
+    if (isUtxoChain(chain)) {
+      return await this.executeUtxoLookup(
+        chain,
+        hash,
+        requestId,
+        endpoint,
+        cacheKey,
+        startTime,
+        userSession,
+      );
+    }
+
+    return await this.executeEvmLookup(
+      chain,
+      hash,
+      requestId,
+      endpoint,
+      cacheKey,
+      startTime,
+      userSession,
+    );
+  }
+
+  /**
+   * Dedicated pipeline for UTXO chains (Bitcoin, Litecoin, Dogecoin, Bitcoin Cash, Dash).
+   */
+  private async executeUtxoLookup(
+    chain: string,
+    hash: string,
+    requestId: string,
+    endpoint: string,
+    cacheKey: string,
+    startTime: number,
+    userSession?: UserSession,
+  ): Promise<TransactionLookupResponse> {
+    try {
+      const utxoResult = await this.blockchairService.getUtxoTransaction(chain, hash);
+      const utxoTx = utxoResult.transaction;
+      const providerDurationMs = utxoResult.providerDurationMs;
+      const upstreamStatusCode = utxoResult.upstreamStatusCode;
+
+      // Generate neutral, truthful narrative explanation without payment intent assumptions
+      let explanation = '';
+      if (utxoTx.isCoinbase) {
+        explanation = `Coinbase transaction generating ${utxoTx.outputTotal.formatted} ${utxoTx.outputTotal.symbol} across ${utxoTx.outputCount} output${utxoTx.outputCount === 1 ? '' : 's'}.`;
+      } else {
+        const feeNote = utxoTx.feePerByte ? ` (${utxoTx.feePerByte} sat/byte)` : '';
+        explanation = `Transaction with ${utxoTx.inputCount} input${utxoTx.inputCount === 1 ? '' : 's'} and ${utxoTx.outputCount} output${utxoTx.outputCount === 1 ? '' : 's'}. Total output: ${utxoTx.outputTotal.formatted} ${utxoTx.outputTotal.symbol}. Network fee: ${utxoTx.fee.formatted} ${utxoTx.fee.symbol}${feeNote}.`;
+      }
+
+      const enrichedData: EnrichedTransactionData = {
+        transactionHash: utxoTx.transactionHash,
+        chain: utxoTx.chain,
+        family: 'utxo',
+        status: utxoTx.status,
+        blockNumber: utxoTx.blockNumber,
+        timestamp: utxoTx.timestamp,
+        explorerUrl: utxoTx.explorerUrl,
+        fetchedAt: new Date().toISOString(),
+        explanation,
+        fee: utxoTx.fee,
+        utxo: {
+          size: utxoTx.size,
+          weight: utxoTx.weight,
+          vsize: utxoTx.vsize,
+          isCoinbase: utxoTx.isCoinbase,
+          confirmations: utxoTx.confirmations,
+          inputCount: utxoTx.inputCount,
+          outputCount: utxoTx.outputCount,
+          inputTotal: utxoTx.inputTotal,
+          outputTotal: utxoTx.outputTotal,
+          feePerByte: utxoTx.feePerByte,
+          inputsTruncated: utxoTx.inputsTruncated,
+          outputsTruncated: utxoTx.outputsTruncated,
+          inputs: utxoTx.inputs,
+          outputs: utxoTx.outputs,
+        },
+      };
+
+      const ttlSeconds = resolveTransactionCacheTtl(utxoTx.status, false);
+      if (ttlSeconds > 0) {
+        await this.cacheService.set(cacheKey, enrichedData, ttlSeconds);
+      }
+
+      const totalDurationMs = Date.now() - startTime;
+      void this.safeLogApiRequest({
+        requestId,
+        endpoint,
+        chain,
+        provider: 'blockchair',
+        cacheOutcome: 'miss',
+        upstreamStatusCode,
+        totalDurationMs,
+        providerDurationMs,
+        outcome: 'success',
+      });
+
+      if (userSession) {
+        void this.safeRecordHistory(userSession.id, {
+          transactionHash: hash,
+          chain,
+          outcome: 'success',
+          txStatus: utxoTx.status,
+          cacheHit: false,
+        });
+      }
+
+      return {
+        data: enrichedData,
+        meta: {
+          requestId,
+          cache: {
+            hit: false,
+          },
+        },
+      };
+    } catch (error) {
+      const totalDurationMs = Date.now() - startTime;
+      let outcome = 'upstream_error';
+
+      if (error instanceof ApiException) {
+        if (error.code === 'TRANSACTION_NOT_FOUND') {
+          outcome = 'not_found';
+        } else if (error.code === 'UPSTREAM_RATE_LIMITED') {
+          outcome = 'rate_limited';
+        }
+      }
+
+      void this.safeLogApiRequest({
+        requestId,
+        endpoint,
+        chain,
+        provider: 'blockchair',
+        cacheOutcome: 'miss',
+        upstreamStatusCode: error instanceof ApiException ? error.getStatus() : null,
+        totalDurationMs,
+        providerDurationMs: null,
+        outcome,
+      });
+
+      if (userSession) {
+        void this.safeRecordHistory(userSession.id, {
+          transactionHash: hash,
+          chain,
+          outcome,
+          txStatus: null,
+          cacheHit: false,
+        });
+      }
+
+      throw error;
+    }
+  }
+
+  /**
+   * Dedicated pipeline for EVM chains (Ethereum Mainnet, legacy BSC, legacy Polygon).
+   */
+  private async executeEvmLookup(
+    chain: string,
+    hash: string,
+    requestId: string,
+    endpoint: string,
+    cacheKey: string,
+    startTime: number,
+    userSession?: UserSession,
+  ): Promise<TransactionLookupResponse> {
     try {
       let baseTx: NormalizedTransaction;
       let providerName = 'blockchair';
@@ -129,7 +294,7 @@ export class TransactionsService {
       let enrichment: RpcEnrichmentData;
 
       if (isBlockchairSupportedChain(chain)) {
-        // Query Blockchair and EVM RPC concurrently for supported chains (Ethereum)
+        // Query Blockchair and EVM RPC concurrently for supported EVM chains (Ethereum)
         const blockchairPromise = this.blockchairService
           .getTransaction(chain, hash)
           .then((res) => ({ ok: true as const, res }))
@@ -150,7 +315,6 @@ export class TransactionsService {
           providerDurationMs = blockchairResult.res.providerDurationMs;
         } else {
           const err = blockchairResult.err;
-          // If Blockchair says transaction not found and RPC also found nothing -> not found
           if (
             err instanceof ApiException &&
             err.code === 'TRANSACTION_NOT_FOUND' &&
@@ -160,7 +324,6 @@ export class TransactionsService {
             throw err;
           }
 
-          // If RPC has on-chain transaction or receipt, gracefully fall back to RPC base transaction
           if (enrichment.transaction || enrichment.receipt) {
             this.logger.warn(
               `Blockchair lookup failed for ${chain}:${hash}, falling back to EVM RPC base transaction: ${err.message}`,
@@ -169,12 +332,11 @@ export class TransactionsService {
             providerName = 'evm_rpc';
             upstreamStatusCode = 200;
           } else {
-            // Rethrow original provider error
             throw err;
           }
         }
       } else {
-        // Direct EVM RPC provider for chains not supported by Blockchair (BSC, Polygon)
+        // Direct EVM RPC provider for legacy chains (BSC, Polygon)
         providerName = 'evm_rpc';
         const rpcStartTime = Date.now();
         enrichment = await this.rpcService.enrichTransaction(chain, hash);
@@ -182,7 +344,7 @@ export class TransactionsService {
         baseTx = this.rpcService.createBaseTransaction(chain, hash, enrichment);
       }
 
-      // 3. Provider Reconciliation: Detect discrepancies between baseTx and RPC receipt
+      // Reconciliation
       let resolvedStatus = baseTx.status;
       let hasDiscrepancy = false;
 
@@ -198,7 +360,7 @@ export class TransactionsService {
         }
       }
 
-      // 4. Generate deterministic Transaction Story
+      // Story Generation
       const story = this.storyGenerator.generateStory(
         baseTx,
         enrichment,
@@ -211,6 +373,7 @@ export class TransactionsService {
       const enrichedData: EnrichedTransactionData = {
         transactionHash: baseTx.transactionHash,
         chain: baseTx.chain,
+        family: 'evm',
         status: resolvedStatus,
         from: baseTx.from,
         to: baseTx.to,
@@ -234,7 +397,7 @@ export class TransactionsService {
 
       const totalDurationMs = Date.now() - startTime;
 
-      // 5. Store normalized result in Redis with status-based TTL
+      // Status-aware TTL & degradation check
       const hasDegradedTokenMetadata = Array.from(enrichment.tokenMetadataMap.values()).some(
         (meta) => meta.isDegraded,
       );
@@ -248,7 +411,7 @@ export class TransactionsService {
         story.coverageReasons.includes('metadata_unavailable');
       const ttlSeconds = resolveTransactionCacheTtl(resolvedStatus, isDegradedOrTemporaryFailure);
 
-      // Monotonicity check: Prevent poorer responses from overwriting more complete responses for the same block
+      // Monotonicity check: Prevent poorer responses from overwriting complete responses
       const existingCache = await this.cacheService.get<EnrichedTransactionData>(cacheKey);
       if (existingCache && this.isValidCachedData(existingCache, hash)) {
         const isSameBlock = String(existingCache.blockNumber) === String(baseTx.blockNumber);
@@ -277,7 +440,6 @@ export class TransactionsService {
         await this.cacheService.set(cacheKey, enrichedData, ttlSeconds);
       }
 
-      // Safe persistence
       void this.safeLogApiRequest({
         requestId,
         endpoint,
@@ -338,7 +500,7 @@ export class TransactionsService {
           transactionHash: hash,
           chain,
           outcome,
-          txStatus: null, // unknown
+          txStatus: null,
           cacheHit: false,
         });
       }
@@ -348,20 +510,34 @@ export class TransactionsService {
   }
 
   /**
-   * Validates cached data shape to prevent legacy v1 entries from breaking the new response.
+   * Validates cached data shape according to network family.
    */
   private isValidCachedData(data: unknown, expectedHash: string): data is EnrichedTransactionData {
     if (!data || typeof data !== 'object') return false;
     const candidate = data as Partial<EnrichedTransactionData>;
-    return Boolean(
-      candidate.transactionHash &&
-      candidate.transactionHash.toLowerCase() === expectedHash.toLowerCase() &&
-      typeof candidate.fetchedAt === 'string' &&
-      typeof candidate.explanation === 'string' &&
-      Array.isArray(candidate.actions) &&
-      Array.isArray(candidate.tokenTransfers) &&
-      candidate.status !== undefined,
-    );
+    if (
+      !candidate.transactionHash ||
+      candidate.transactionHash.toLowerCase() !== expectedHash.toLowerCase()
+    ) {
+      return false;
+    }
+    if (
+      typeof candidate.fetchedAt !== 'string' ||
+      typeof candidate.explanation !== 'string' ||
+      candidate.status === undefined
+    ) {
+      return false;
+    }
+
+    if (candidate.family === 'utxo') {
+      return Boolean(
+        candidate.utxo &&
+          Array.isArray(candidate.utxo.inputs) &&
+          Array.isArray(candidate.utxo.outputs),
+      );
+    }
+
+    return Boolean(Array.isArray(candidate.actions) && Array.isArray(candidate.tokenTransfers));
   }
 
   private async safeLogApiRequest(data: {

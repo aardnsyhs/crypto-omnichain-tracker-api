@@ -68,6 +68,7 @@ describe('TransactionsService', () => {
 
   const mockEnrichedData: EnrichedTransactionData = {
     ...mockBaseTx,
+    family: 'evm',
     fetchedAt: '2026-09-01T12:00:05.000Z',
     explanation: 'Transferred 1.5 ETH from 0x123... to 0xabc....',
     coverage: 'complete',
