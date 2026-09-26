@@ -385,7 +385,8 @@ describe('UTXO Multichain Expansion Suite', () => {
           status: 'confirmed',
           blockNumber: '968673',
           timestamp: '2026-09-26T10:33:41Z',
-          confirmations: 5,
+          confirmations: 10,
+          referenceBlockHeight: 968682,
           explorerUrl: `https://blockchair.com/bitcoin/transaction/${btcHash}`,
           fee: { raw: '11200', formatted: '0.000112', symbol: 'BTC' },
           size: 222,
@@ -411,10 +412,12 @@ describe('UTXO Multichain Expansion Suite', () => {
 
       expect(response.data.family).toBe('utxo');
       expect(response.data.chain).toBe('bitcoin');
+      expect(response.data.utxo?.confirmations).toBe(10);
+      expect(response.data.utxo?.referenceBlockHeight).toBe(968682);
       expect(response.data.explanation).toContain('Transaction with 1 input and 2 outputs');
       expect(response.meta.cache.hit).toBe(false);
 
-      // Verify cache key isolates chain and hash
+      // Verify deeply confirmed (>= 6) uses standard TTL 3600
       const expectedCacheKey = `transaction:v2:bitcoin:${btcHash}`;
       expect(cacheService.set).toHaveBeenCalledWith(expectedCacheKey, expect.anything(), 3600);
 
@@ -425,6 +428,49 @@ describe('UTXO Multichain Expansion Suite', () => {
       });
       expect(cachedResponse.meta.cache.hit).toBe(true);
       expect(blockchairService.getUtxoTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches recent confirmed UTXO transactions (< 6 confirmations) with short 60s TTL', async () => {
+      const btcHashRecent = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+      blockchairService.getUtxoTransaction.mockResolvedValueOnce({
+        transaction: {
+          transactionHash: btcHashRecent,
+          chain: 'bitcoin',
+          status: 'confirmed',
+          blockNumber: '968680',
+          timestamp: '2026-09-26T11:00:00Z',
+          confirmations: 2, // < 6 confirmations
+          referenceBlockHeight: 968681,
+          explorerUrl: `https://blockchair.com/bitcoin/transaction/${btcHashRecent}`,
+          fee: { raw: '5000', formatted: '0.00005', symbol: 'BTC' },
+          size: 190,
+          isCoinbase: false,
+          inputCount: 1,
+          outputCount: 1,
+          inputTotal: { raw: '100000', formatted: '0.001', symbol: 'BTC' },
+          outputTotal: { raw: '95000', formatted: '0.00095', symbol: 'BTC' },
+          inputsTruncated: false,
+          outputsTruncated: false,
+          inputs: [],
+          outputs: [],
+        },
+        upstreamStatusCode: 200,
+        providerDurationMs: 80,
+      });
+
+      const response = await service.lookupTransaction({
+        chain: 'bitcoin',
+        transactionHash: btcHashRecent,
+      });
+
+      expect(response.data.status).toBe('confirmed');
+      expect(response.data.utxo?.confirmations).toBe(2);
+      expect(response.data.utxo?.referenceBlockHeight).toBe(968681);
+
+      // Verify low confirmations (< 6) uses short degraded TTL 60
+      const expectedCacheKey = `transaction:v2:bitcoin:${btcHashRecent}`;
+      expect(cacheService.set).toHaveBeenCalledWith(expectedCacheKey, expect.anything(), 60);
     });
 
     it('does not cache pending UTXO transactions (TTL 0)', async () => {

@@ -187,6 +187,7 @@ export class TransactionsService {
           vsize: utxoTx.vsize,
           isCoinbase: utxoTx.isCoinbase,
           confirmations: utxoTx.confirmations,
+          referenceBlockHeight: utxoTx.referenceBlockHeight ?? null,
           inputCount: utxoTx.inputCount,
           outputCount: utxoTx.outputCount,
           inputTotal: utxoTx.inputTotal,
@@ -199,7 +200,14 @@ export class TransactionsService {
         },
       };
 
-      const ttlSeconds = resolveTransactionCacheTtl(utxoTx.status, false);
+      // Freshness policy for UTXO data:
+      // - Pending (0 confirmations): strictly bypass cache (TTL 0).
+      // - Low confirmations (< 6): confirmations and spent status change rapidly across blocks;
+      //   apply short 60s TTL so fresh state is periodically reconciled.
+      // - Deeply confirmed (>= 6): 6+ block finality; structure and inputs/outputs are permanent.
+      //   Cache for standard 3600s with referenceBlockHeight and fetchedAt providing explicit snapshot grounding.
+      const isLowConfirmations = utxoTx.status === 'confirmed' && utxoTx.confirmations < 6;
+      const ttlSeconds = resolveTransactionCacheTtl(utxoTx.status, isLowConfirmations);
       if (ttlSeconds > 0) {
         await this.cacheService.set(cacheKey, enrichedData, ttlSeconds);
       }

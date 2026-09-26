@@ -236,6 +236,7 @@ export interface NormalizedUtxoTransaction {
     symbol: string;
   };
   feePerByte?: string | null;
+  referenceBlockHeight?: number | null;
   inputsTruncated: boolean;
   outputsTruncated: boolean;
   inputs: NormalizedUtxoInput[];

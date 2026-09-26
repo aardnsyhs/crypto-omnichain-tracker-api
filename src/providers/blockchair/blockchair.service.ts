@@ -375,6 +375,7 @@ export class BlockchairService {
         symbol: nativeSymbol,
       },
       feePerByte,
+      referenceBlockHeight: typeof currentState === 'number' ? currentState : null,
       inputsTruncated,
       outputsTruncated,
       inputs: normalizedInputs,
