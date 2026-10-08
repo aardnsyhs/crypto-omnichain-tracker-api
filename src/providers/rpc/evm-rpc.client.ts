@@ -1,4 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+export const rpcDeadline = new AsyncLocalStorage<AbortSignal>();
 import axios, { AxiosInstance } from 'axios';
 import {
   DEFAULT_RPC_TIMEOUT_MS,
@@ -39,6 +42,7 @@ export class EvmRpcClient {
    * Performs JSON-RPC 2.0 call to chain's configured endpoint.
    */
   async rpcCall<T>(chain: string, method: string, params: unknown[] = []): Promise<T | null> {
+    rpcDeadline.getStore()?.throwIfAborted();
     const rpcUrl = getRpcUrlForChain(chain);
     if (!rpcUrl) {
       return null;
@@ -54,7 +58,9 @@ export class EvmRpcClient {
       params,
     };
 
-    const res = await this.http.post<JsonRpcResponse<T>>(rpcUrl, payload);
+    const res = await this.http.post<JsonRpcResponse<T>>(rpcUrl, payload, {
+      signal: rpcDeadline.getStore(),
+    });
     if (res.data?.error) {
       const err = res.data.error;
       const isTransientRpcError =
@@ -100,8 +106,11 @@ export class EvmRpcClient {
         params: [],
       };
 
-      const res = await this.http.post<JsonRpcResponse<string>>(rpcUrl, payload);
+      const res = await this.http.post<JsonRpcResponse<string>>(rpcUrl, payload, {
+        signal: rpcDeadline.getStore(),
+      });
       const chainIdHex = res.data?.result;
+      if (!chainIdHex) throw new Error('RPC chain ID verification returned no chain ID');
       if (chainIdHex) {
         const chainIdNum = Number.parseInt(chainIdHex, 16);
         if (chainIdNum !== expectedId) {

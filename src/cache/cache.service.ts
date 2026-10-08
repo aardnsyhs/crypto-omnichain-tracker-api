@@ -15,16 +15,13 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
         lazyConnect: true,
         maxRetriesPerRequest: 1,
         connectTimeout: 2000,
-        retryStrategy: (times) => {
-          if (times > 3) {
-            return null; // Stop reconnecting aggressively on failure
-          }
-          return Math.min(times * 500, 2000);
-        },
+        commandTimeout: 2000,
+        enableOfflineQueue: false,
+        retryStrategy: (times) => Math.min(500 * 2 ** Math.min(times - 1, 6), 30000),
       });
 
       this.client.on('connect', () => {
-        this.isConnected = true;
+        this.isConnected = false;
         this.logger.log('Connected to Redis cache server.');
       });
 
@@ -59,6 +56,10 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy(): Promise<void> {
     if (this.client) {
+      if (!this.isConnected) {
+        this.client.disconnect();
+        return;
+      }
       try {
         await this.client.quit();
       } catch {
@@ -69,6 +70,15 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
 
   isHealthy(): boolean {
     return this.isConnected;
+  }
+
+  async ping(): Promise<boolean> {
+    if (!this.client || !this.isConnected || this.client.status !== 'ready') return false;
+    try {
+      return (await this.client.ping()) === 'PONG';
+    } catch {
+      return false;
+    }
   }
 
   /**

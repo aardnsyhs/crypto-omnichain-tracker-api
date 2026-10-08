@@ -39,6 +39,6 @@ import { OverviewModule } from './overview/overview.module';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(SessionMiddleware).exclude('health/{*path}').forRoutes('{*path}');
+    consumer.apply(SessionMiddleware).exclude('health/{*path}', 'overview').forRoutes('{*path}');
   }
 }

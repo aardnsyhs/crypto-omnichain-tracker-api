@@ -11,21 +11,20 @@ export class SessionMiddleware implements NestMiddleware {
 
   async use(req: Request, res: Response, next: NextFunction): Promise<void> {
     const cookieName = getSessionCookieName();
-    const candidateSessionId: string | undefined =
-      req.signedCookies?.[cookieName] ?? req.cookies?.[cookieName];
+    const signed: unknown = req.signedCookies?.[cookieName];
+    const candidateSessionId =
+      typeof signed === 'string' && /^[a-f0-9]{64}$/.test(signed) ? signed : undefined;
 
     try {
-      const { session, isNew } = await this.sessionService.getOrCreateSession(candidateSessionId);
+      const { session } = await this.sessionService.getOrCreateSession(candidateSessionId);
 
       req.userSession = session;
       req.sessionId = session.sessionId;
 
-      if (isNew) {
-        res.cookie(cookieName, session.sessionId, getSessionCookieOptions());
-        this.logger.debug(
-          `Set new signed session cookie "${cookieName}" for session ${session.sessionId.slice(0, 8)}...`,
-        );
-      }
+      res.cookie(cookieName, session.sessionId, {
+        ...getSessionCookieOptions(),
+        maxAge: Math.max(0, session.expiresAt.getTime() - Date.now()),
+      });
 
       next();
     } catch (error) {

@@ -9,6 +9,7 @@ import {
 import type { Request, Response } from 'express';
 import * as crypto from 'node:crypto';
 import { ApiException, ApiErrorCode } from '../exceptions/api.exception';
+import { ACTIVE_CHAINS, LEGACY_CHAINS } from '../constants/network-registry';
 
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -49,7 +50,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
               (rawMsg.includes('transactionHash') && !rawMsg.includes('required')))
           ) {
             code = 'INVALID_TRANSACTION_HASH';
-            if (rawMsg.includes('without 0x prefix') || rawMsg.includes('hexadecimal transaction ID')) {
+            if (
+              rawMsg.includes('without 0x prefix') ||
+              rawMsg.includes('hexadecimal transaction ID')
+            ) {
               message = rawMsg;
             } else {
               message =
@@ -61,8 +65,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
               (rawMsg.includes('chain') && !rawMsg.includes('required')))
           ) {
             code = 'UNSUPPORTED_CHAIN';
-            message =
-              'The provided chain is not supported. Must be one of: ethereum, bitcoin, litecoin, dogecoin, bitcoin-cash, dash.';
+            message = `The provided chain is not supported. Active networks: ${ACTIVE_CHAINS.join(', ')}. Legacy lookup support: ${LEGACY_CHAINS.join(', ')}.`;
           } else {
             code = 'VALIDATION_ERROR';
             message = rawMsg || 'Invalid request payload.';
@@ -81,6 +84,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       );
     }
 
+    if (status === 429 && !response.getHeader('Retry-After'))
+      response.setHeader('Retry-After', String(process.env.REFRESH_COOLDOWN_SECONDS || 15));
     response.status(status).json({
       error: {
         code,

@@ -154,8 +154,8 @@ describe('History and Session Endpoints (e2e)', () => {
         .expect(200);
 
       expect(secondResponse.body.meta.sessionId).toBe(firstSessionId);
-      // It should not issue a new cookie because session is already active
-      expect(secondResponse.headers['set-cookie']).toBeUndefined();
+      // Renewal keeps the same signed identity and aligns expiry with the database.
+      expect(secondResponse.headers['set-cookie'][0].split(';')[0]).toBe(cookies[0].split(';')[0]);
     });
   });
 });

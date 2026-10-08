@@ -210,12 +210,16 @@ export class BlockchairClient {
       });
       const durationMs = Date.now() - startTime;
 
-      if (!response.data?.data || typeof response.data.data !== 'object') {
+      if (
+        [402, 429].includes(response.data?.context?.code ?? response.status) ||
+        !response.data?.data ||
+        typeof response.data.data !== 'object'
+      ) {
         return {
           data: null,
-          statusCode: response.status,
+          statusCode: response.data?.context?.code ?? response.status,
           durationMs,
-          isRateLimited: false,
+          isRateLimited: [402, 429].includes(response.data?.context?.code ?? response.status),
         };
       }
 
@@ -260,7 +264,9 @@ export class BlockchairClient {
         };
       }
 
-      this.logger.warn(`Unexpected Blockchair global stats fetch error: ${(error as Error).message}`);
+      this.logger.warn(
+        `Unexpected Blockchair global stats fetch error: ${(error as Error).message}`,
+      );
       return {
         data: null,
         statusCode: 500,
@@ -301,10 +307,12 @@ export class BlockchairClient {
       const durationMs = Date.now() - startTime;
 
       return {
-        data: response.data?.data ?? null,
-        statusCode: response.status,
+        data: [402, 429].includes(response.data?.context?.code ?? response.status)
+          ? null
+          : (response.data?.data ?? null),
+        statusCode: response.data?.context?.code ?? response.status,
         durationMs,
-        isRateLimited: false,
+        isRateLimited: [402, 429].includes(response.data?.context?.code ?? response.status),
       };
     } catch (error) {
       const durationMs = Date.now() - startTime;

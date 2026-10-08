@@ -1,49 +1,49 @@
-import { Test, TestingModule } from '@nestjs/testing';
+import { jest } from '@jest/globals';
 import { HealthController } from './health.controller';
 import { HealthService } from './health.service';
+import { PrismaService } from '../database/prisma.service';
+import { CacheService } from '../cache/cache.service';
 
-describe('HealthController', () => {
+describe('Health checks', () => {
+  const database = { isHealthy: jest.fn<() => Promise<boolean>>() };
+  const redis = { ping: jest.fn<() => Promise<boolean>>() };
   let controller: HealthController;
-  let service: HealthService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      controllers: [HealthController],
-      providers: [HealthService],
-    }).compile();
-
-    controller = module.get<HealthController>(HealthController);
-    service = module.get<HealthService>(HealthService);
+  beforeEach(() => {
+    database.isHealthy.mockResolvedValue(true);
+    redis.ping.mockResolvedValue(true);
+    controller = new HealthController(
+      new HealthService(database as unknown as PrismaService, redis as unknown as CacheService),
+    );
   });
-
-  it('should be defined', () => {
-    expect(controller).toBeDefined();
-    expect(service).toBeDefined();
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.clearAllMocks();
   });
-
-  describe('getLive', () => {
-    it('should return status ok with uptime and timestamp', () => {
-      const result = controller.getLive();
-      expect(result.status).toBe('ok');
-      expect(typeof result.uptimeSeconds).toBe('number');
-      expect(result.uptimeSeconds).toBeGreaterThanOrEqual(0);
-      expect(typeof result.timestamp).toBe('string');
-      expect(Number.isNaN(Date.parse(result.timestamp))).toBe(false);
+  it('liveness requires no dependencies', () => {
+    expect(controller.getLive().status).toBe('ok');
+    expect(database.isHealthy).not.toHaveBeenCalled();
+  });
+  it('checks both dependencies', async () => {
+    expect((await controller.getReady()).status).toBe('ready');
+  });
+  it('reports a database failure without internal details', async () => {
+    database.isHealthy.mockRejectedValue(new Error('secret credentials'));
+    const response = await controller.getReady();
+    expect(response.status).toBe('unavailable');
+    expect(JSON.stringify(response)).not.toContain('secret');
+  });
+  it('allows cache bypass', async () => {
+    redis.ping.mockResolvedValue(false);
+    expect(await controller.getReady()).toMatchObject({
+      status: 'degraded',
+      checks: { redis: 'bypassed' },
     });
   });
-
-  describe('getReady', () => {
-    it('should return honest degraded readiness payload', () => {
-      const result = controller.getReady();
-      expect(result).toEqual({
-        status: 'degraded',
-        checks: {
-          api: 'ready',
-          database: 'not_checked',
-          redis: 'not_checked',
-        },
-        phase: 'milestone-1a',
-      });
-    });
+  it('bounds hung checks', async () => {
+    jest.useFakeTimers();
+    database.isHealthy.mockImplementation(() => new Promise(() => {}));
+    const response = controller.getReady();
+    await jest.advanceTimersByTimeAsync(2100);
+    expect((await response).status).toBe('unavailable');
   });
 });

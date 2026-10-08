@@ -1,0 +1,55 @@
+name: API checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tracker_test
+          POSTGRES_PASSWORD: ci_only_password
+          POSTGRES_DB: tracker_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U tracker_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://tracker_test:ci_only_password@127.0.0.1:5432/tracker_test
+      REDIS_URL: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run prisma:generate
+      - run: npm run prisma:deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --runInBand
+      - run: npm run test:e2e -- --runInBand
+      - run: npm run build
+      - run: node scripts/integration.cjs
+      - run: sudo apt-get update && sudo apt-get install -y redis-server
+      - run: node scripts/cache-recovery.cjs
+      - run: node scripts/provider-contract.cjs
+      - run: node scripts/startup-smoke.cjs
+      - name: Record dependency advisories
+        continue-on-error: true
+        run: npm audit --json > dependency-audit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-dependency-audit
+          path: dependency-audit.json

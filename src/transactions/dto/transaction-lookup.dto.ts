@@ -26,19 +26,17 @@ export function IsValidTransactionHash(validationOptions?: ValidationOptions) {
           const obj = args.object as { chain?: string };
           const chain = obj.chain;
           if (!chain) return false;
+          if (!(ALL_SUPPORTED_CHAINS as readonly string[]).includes(chain)) return true;
           return isValidHashForChain(chain, value);
         },
-        defaultMessage: buildMessage(
-          (eachPrefix, args) => {
-            const obj = args?.object as { chain?: string };
-            const chain = obj?.chain;
-            if (chain && isUtxoChain(chain)) {
-              return `transactionHash for ${chain} must be a 64-character hexadecimal transaction ID without 0x prefix`;
-            }
-            return `transactionHash must match 0x followed by 64 hexadecimal characters`;
-          },
-          validationOptions,
-        ),
+        defaultMessage: buildMessage((eachPrefix, args) => {
+          const obj = args?.object as { chain?: string };
+          const chain = obj?.chain;
+          if (chain && isUtxoChain(chain)) {
+            return `transactionHash for ${chain} must be a 64-character hexadecimal transaction ID without 0x prefix`;
+          }
+          return `transactionHash must match 0x followed by 64 hexadecimal characters`;
+        }, validationOptions),
       },
     },
     validationOptions,

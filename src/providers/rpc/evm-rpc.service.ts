@@ -2,7 +2,7 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ApiException } from '../../common/exceptions/api.exception';
 import { formatUnits, getExplorerUrl, getNativeSymbol } from '../../common/utils/evm.utils';
 import type { NormalizedTransaction } from '../blockchair/blockchair.interface';
-import { EvmRpcClient } from './evm-rpc.client';
+import { EvmRpcClient, rpcDeadline } from './evm-rpc.client';
 import { TokenMetadataCache } from './token-metadata.cache';
 import {
   ERC20_APPROVAL_TOPIC0,
@@ -37,16 +37,20 @@ export class EvmRpcService {
       temporaryFailure: false,
     };
 
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const enrichmentPromise = this.performEnrichment(chain, transactionHash);
+      const enrichmentPromise = rpcDeadline.run(controller.signal, () =>
+        this.performEnrichment(chain, transactionHash, defaultData, controller.signal),
+      );
 
       // Race with overall deadline
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(
-          () =>
-            reject(new Error(`Enrichment deadline of ${TOTAL_ENRICHMENT_DEADLINE_MS}ms exceeded`)),
-          TOTAL_ENRICHMENT_DEADLINE_MS,
-        ),
+      const timeoutPromise = new Promise<never>(
+        (_, reject) =>
+          (timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error(`Enrichment deadline of ${TOTAL_ENRICHMENT_DEADLINE_MS}ms exceeded`));
+          }, TOTAL_ENRICHMENT_DEADLINE_MS)),
       );
 
       return await Promise.race([enrichmentPromise, timeoutPromise]);
@@ -59,24 +63,63 @@ export class EvmRpcService {
         temporaryFailure: true,
         failureReason: (err as Error).message,
       };
+    } finally {
+      clearTimeout(timer);
+      controller.abort();
     }
   }
 
   private async performEnrichment(
     chain: string,
     transactionHash: string,
+    partial: RpcEnrichmentData,
+    signal: AbortSignal,
   ): Promise<RpcEnrichmentData> {
     const [initialReceipt, tx] = await Promise.all([
-      this.rpcClient.getTransactionReceipt(chain, transactionHash),
-      this.rpcClient.getTransactionByHash(chain, transactionHash),
+      this.rpcClient
+        .getTransactionReceipt(chain, transactionHash)
+        .then((receipt) => {
+          if (!signal.aborted) {
+            partial.receipt = receipt;
+            partial.logs = receipt?.logs ?? [];
+            partial.gasUsed = receipt?.gasUsed ? String(BigInt(receipt.gasUsed)) : null;
+            partial.status =
+              receipt?.status === '0x1'
+                ? 'confirmed'
+                : receipt?.status === '0x0'
+                  ? 'failed'
+                  : 'unknown';
+          }
+          return receipt;
+        })
+        .catch(() => {
+          partial.temporaryFailure = true;
+          return null;
+        }),
+      this.rpcClient
+        .getTransactionByHash(chain, transactionHash)
+        .then((tx) => {
+          if (!signal.aborted) {
+            partial.transaction = tx;
+            partial.inputData = tx?.input && tx.input !== '0x' ? tx.input : null;
+          }
+          return tx;
+        })
+        .catch(() => {
+          partial.temporaryFailure = true;
+          return null;
+        }),
     ]);
     let receipt = initialReceipt;
+    signal.throwIfAborted();
 
     // If tx has blockNumber (confirmed on-chain) but receipt is null,
     // retry fetching the receipt once after a brief delay (300ms) to accommodate node lag
     if (!receipt && tx?.blockNumber && tx.blockNumber !== '0x0') {
       await new Promise((resolve) => setTimeout(resolve, 300));
+      signal.throwIfAborted();
       receipt = await this.rpcClient.getTransactionReceipt(chain, transactionHash);
+      partial.receipt = receipt;
     }
 
     let status: 'confirmed' | 'failed' | 'pending' | 'unknown' = 'unknown';
@@ -86,10 +129,12 @@ export class EvmRpcService {
       } else if (receipt.status === '0x0') {
         status = 'failed';
       }
+    } else if (tx && !tx.blockNumber && !partial.temporaryFailure) {
+      status = 'pending';
     }
 
     const isMined = Boolean(tx?.blockNumber && tx.blockNumber !== '0x0');
-    let temporaryFailure = false;
+    let temporaryFailure = partial.temporaryFailure;
     let failureReason: string | undefined;
 
     if (!receipt && isMined) {
@@ -101,6 +146,16 @@ export class EvmRpcService {
     const logs: RpcLog[] = receipt?.logs ?? [];
     const inputData = tx?.input && tx.input !== '0x' ? tx.input : null;
     const gasUsed = receipt?.gasUsed ? String(BigInt(receipt.gasUsed)) : null;
+    Object.assign(partial, {
+      receipt,
+      transaction: tx,
+      inputData,
+      gasUsed,
+      status,
+      logs,
+      temporaryFailure,
+      failureReason,
+    });
 
     const targetAddress = tx?.to || receipt?.to;
     const codePromise = (async (): Promise<boolean | null> => {
@@ -159,6 +214,7 @@ export class EvmRpcService {
       if (candidateTokens.size > 0) {
         const tokensArray = Array.from(candidateTokens);
         for (let i = 0; i < tokensArray.length; i += MAX_METADATA_CONCURRENCY) {
+          signal.throwIfAborted();
           const batch = tokensArray.slice(i, i + MAX_METADATA_CONCURRENCY);
           const results = await Promise.all(
             batch.map((tokenAddress) =>
@@ -170,6 +226,8 @@ export class EvmRpcService {
 
           for (const meta of results) {
             tokenMetadataMap.set(meta.contractAddress.toLowerCase(), meta);
+            if (!signal.aborted)
+              partial.tokenMetadataMap.set(meta.contractAddress.toLowerCase(), meta);
           }
         }
       }

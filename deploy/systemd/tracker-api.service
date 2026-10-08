@@ -1,0 +1,29 @@
+[Unit]
+Description=Transaction Story Explorer API
+After=network-online.target postgresql.service redis-server.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tracker
+Group=tracker
+WorkingDirectory=/srv/tracker/api/current
+EnvironmentFile=/etc/tracker/api.env
+ExecStart=/usr/bin/node dist/src/main.js
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=55
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tracker-api
+
+[Install]
+WantedBy=multi-user.target

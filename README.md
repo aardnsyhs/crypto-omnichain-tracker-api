@@ -1,63 +1,21 @@
-# Crypto Omnichain Transaction Tracker — API
+# Transaction Story Explorer API
 
-Backend service for **Crypto Omnichain Transaction Tracker**, built with NestJS, strict TypeScript, PostgreSQL (Prisma), Redis, and multi-chain EVM RPC adapters.
+NestJS API for per-network transaction lookup, presented by the frontend as an Investigative Ledger. Active networks are Ethereum, Bitcoin, Litecoin, Dogecoin, Bitcoin Cash, and Dash. BSC and Polygon retain legacy EVM lookup compatibility but are not advertised as active overview networks. The application does not trace a cross-chain journey.
 
-## Project Context
+Blockchair supplies transaction dashboards and market/network statistics. Ethereum uses RPC enrichment and fallback; legacy EVM chains use their configured RPC endpoints. ERC-20 transfers and approvals are decoded from receipts. UTXO amounts use exact BigInt arithmetic. No CoinGecko dependency is used.
 
-This repository (`crypto-omnichain-tracker-api`) contains the backend service and owns the canonical API contract. The frontend client lives in a paired separate repository (`crypto-omnichain-tracker-web`). The frontend consumes the versioned API contract and never imports backend source code directly.
+Use Node 24 LTS, PostgreSQL 16 and Redis 7. For local development:
 
-## Capabilities & Architecture
+```sh
+cp .env.example .env
+npm ci --ignore-scripts
+npm run prisma:generate
+npm run prisma:deploy
+npm run start:dev
+```
 
-- **Transaction Story Engine:** Explains user intent, native transfers, ERC-20 token movements, and approval allowances with deterministic, execution-status-aligned narratives.
-- **Multi-Chain Support:** Ethereum Mainnet, BNB Smart Chain, and Polygon PoS.
-- **EVM RPC Enrichment:** Decodes receipts, logs, and token metadata using standard JSON-RPC (`eth_getTransactionReceipt`, `eth_getTransactionByHash`, `eth_call`) with bounded deadlines and graceful degradation.
-- **Strict Decoding Standards:** Distinguishes ERC-20 from ERC-721 NFT events; handles BigInt token amounts without floating-point precision loss; detects maximum allowance (`2^256 - 1`) and zero allowance revocations.
-- **Provider Reconciliation:** Validates chain IDs, detects execution status discrepancies between Blockchair and on-chain RPC receipts, and flags uncertain states as `unknown`.
-- **Status-Based Cache-Aside (Redis):**
-  - Confirmed: 3600s TTL
-  - Failed: 3600s TTL
-  - Degraded / Temporary failure: 60s TTL
-  - Pending: strictly 0s (bypassed)
-  - Preserves immutable `fetchedAt` timestamps on cache hits.
-- **Auditing & History:** Scoped anonymous session history and request telemetry persisted in PostgreSQL.
+`prisma:deploy` applies checked-in migrations to the configured local database. For new development migrations only, use `npm run prisma:migrate`. Never point development migration commands at production.
 
-## Prerequisites
+Checks: `npm run lint`, `npm run typecheck`, `npm test -- --runInBand`, `npm run test:e2e -- --runInBand`, and `npm run build`. Integration services must be isolated. The compiled entrypoint is `dist/src/main.js`; `npm run start:prod` starts it. Graceful shutdown closes database and cache clients.
 
-- Node.js >= 20.0.0
-- PostgreSQL >= 15
-- Redis >= 7
-
-## Setup and Installation
-
-1. Install dependencies:
-
-   ```bash
-   npm install
-   ```
-
-2. Configure environment variables:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-3. Run database migrations:
-   ```bash
-   npm run prisma:migrate
-   ```
-
-## Development Commands
-
-- `npm run start:dev` — Start the application in development watch mode
-- `npm run build` — Compile TypeScript into production bundle in `dist/`
-- `npm run start:prod` — Run production build
-- `npm run lint` — Execute ESLint static analysis
-- `npm run format` — Format code with Prettier
-- `npm run typecheck` — Run TypeScript type checking without emitting files
-- `npm run test` — Execute unit tests with Jest
-- `npm run test:e2e` — Execute end-to-end integration tests
-
-## Documentation
-
-- Full specification: [docs/mvp-spec.md](docs/mvp-spec.md)
-- Canonical API contract: [docs/api-contract.md](docs/api-contract.md)
+See [API behavior](docs/API.md), [VPS deployment and rollback](docs/DEPLOYMENT.md), and [verification record](docs/VERIFICATION.md). Production examples and staged Nginx/systemd templates are included; they are not deployed automatically.

@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/commo
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
+import { validateEnvironment } from '../config/environment';
 
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -9,10 +10,13 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
   private readonly pool: Pool;
 
   constructor() {
-    const connectionString =
-      process.env.DATABASE_URL ||
-      'postgresql://postgres:postgres@localhost:5432/omnichain_tracker?schema=public';
-    const pool = new Pool({ connectionString });
+    validateEnvironment();
+    const pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      connectionTimeoutMillis: 2000,
+      query_timeout: 2000,
+      statement_timeout: 2000,
+    });
     const adapter = new PrismaPg(pool);
     super({ adapter });
     this.pool = pool;
@@ -22,8 +26,8 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     try {
       await this.$connect();
       this.logger.log('Successfully connected to PostgreSQL database via Prisma.');
-    } catch (error) {
-      this.logger.warn(`Initial database connection failed: ${(error as Error).message}`);
+    } catch {
+      this.logger.warn('Initial database connection failed; readiness will remain unavailable.');
     }
   }
 

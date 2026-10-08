@@ -1,11 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { CacheService } from '../cache/cache.service';
 import { BlockchairClient } from '../providers/blockchair/blockchair.client';
 import { getBlockchairSlug } from '../providers/blockchair/blockchair.constants';
-import {
-  ACTIVE_CHAINS,
-  NETWORK_REGISTRY,
-} from '../common/constants/network-registry';
+import { ACTIVE_CHAINS, NETWORK_REGISTRY } from '../common/constants/network-registry';
 import {
   OVERVIEW_BLOCKCHAIR_CACHE_TTL_SECONDS,
   OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS,
@@ -13,262 +10,248 @@ import {
 } from './overview.constants';
 import type {
   CachedOverviewEnvelope,
-  ChainNetworkData,
-  CoinMarketData,
   NetworkOverviewItem,
   OverviewResponse,
+  CoinMarketData,
+  ChainNetworkData,
 } from './overview.interface';
-import type { RawBlockchairStats } from '../providers/blockchair/blockchair.interface';
+import type {
+  RawBlockchairStats,
+  BlockchairGlobalStatsFetchResult,
+} from '../providers/blockchair/blockchair.interface';
+
+type Section = CoinMarketData | ChainNetworkData;
+const marketKeys = ['priceUsd', 'change24h'] as const;
+const networkKeys = [
+  'latestBlockNumber',
+  'latestBlockTimestamp',
+  'blockDate',
+  'suggestedFeeRate',
+  'suggestedGasPriceGwei',
+  'suggestedGasPriceWei',
+] as const;
 
 @Injectable()
 export class OverviewService {
-  private readonly logger = new Logger(OverviewService.name);
-
-  // In-flight request deduplication promise to prevent cache stampedes
-  private inFlightBatchPromise: Promise<{
-    envelope: CachedOverviewEnvelope | null;
-    isRateLimited: boolean;
-  }> | null = null;
-
+  private inFlight: Promise<OverviewResponse> | null = null;
+  private lastValid: CachedOverviewEnvelope | null = null;
+  private retryAt = 0;
+  private limited = false;
+  private providerStatus: number | undefined;
   constructor(
     private readonly cacheService: CacheService,
     private readonly blockchairClient: BlockchairClient,
   ) {}
 
-  /**
-   * Retrieves the combined multichain market and network overview strictly from Blockchair.
-   * Batches active chains via GET /stats, with individual fallback resilience.
-   * Covers: Ethereum, Bitcoin, Litecoin, Dogecoin, Bitcoin Cash, and Dash.
-   */
   async getOverview(): Promise<OverviewResponse> {
-    const serverFetchedAt = new Date().toISOString();
-    const cacheKey = buildOverviewBlockchairCacheKey();
-    const now = Date.now();
+    const cached =
+      (await this.cacheService.get<CachedOverviewEnvelope>(buildOverviewBlockchairCacheKey())) ??
+      this.lastValid;
+    if (cached && Date.now() < cached.expiresAt) return this.present(cached, true);
+    if (this.inFlight) return this.inFlight;
+    if (Date.now() < this.retryAt) return this.present(cached, true);
+    this.inFlight = this.refresh(cached).finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
 
-    // 1. Read cached envelope from Redis
-    const cached = await this.cacheService.get<CachedOverviewEnvelope>(cacheKey);
-
-    if (cached && now < cached.expiresAt && cached.items?.length === ACTIVE_CHAINS.length) {
-      return {
-        data: cached.items,
-        meta: {
-          fetchedAt: cached.fetchedAt,
-          cached: true,
-        },
-      };
+  private async refresh(cached: CachedOverviewEnvelope | null): Promise<OverviewResponse> {
+    let batch: BlockchairGlobalStatsFetchResult;
+    try {
+      batch = await this.blockchairClient.fetchGlobalStats();
+    } catch {
+      batch = { data: null, isRateLimited: false, statusCode: 502, durationMs: 0 };
     }
-
-    // 2. Cache miss or expired: fetch live with deduplication
-    if (!this.inFlightBatchPromise) {
-      this.inFlightBatchPromise = (async () => {
+    this.limited = batch.isRateLimited || [402, 429].includes(batch.statusCode);
+    this.providerStatus = batch.statusCode;
+    const now = new Date().toISOString();
+    const items: NetworkOverviewItem[] = [];
+    let received = false;
+    for (const chain of ACTIVE_CHAINS) {
+      let raw = batch.data?.[getBlockchairSlug(chain)] ?? null;
+      // Only fill holes in a successful batch; an outage must not fan out into six requests.
+      if (!raw && batch.data && !this.limited) {
         try {
-          const batchResult = await this.blockchairClient.fetchGlobalStats();
-          const globalData = batchResult.data;
-
-          const items: NetworkOverviewItem[] = [];
-          const fetchedAt = new Date().toISOString();
-
-          for (const chain of ACTIVE_CHAINS) {
-            const config = NETWORK_REGISTRY[chain];
-            const slug = getBlockchairSlug(chain);
-            let rawStats: RawBlockchairStats | null = globalData ? globalData[slug] ?? null : null;
-
-            // Fallback: If chain was not present in global stats, fetch individually
-            if (!rawStats) {
-              const indResult = await this.blockchairClient.fetchChainStats(chain);
-              rawStats = indResult?.data ?? null;
-            }
-
-            if (rawStats) {
-              const blockDate = rawStats.best_block_time
-                ? new Date(rawStats.best_block_time.replace(' ', 'T') + 'Z').toISOString()
-                : null;
-              const latestBlockTimestamp = blockDate
-                ? Math.floor(new Date(blockDate).getTime() / 1000)
-                : null;
-
-              let suggestedFeeRate: string | null = null;
-              let suggestedGasPriceGwei: string | null = null;
-              let suggestedGasPriceWei: string | null = null;
-              let feeRateNote: string | null = null;
-
-              if (config.family === 'evm') {
-                const normalGweiNum = rawStats.suggested_transaction_fee_gwei_options?.normal;
-                if (normalGweiNum !== undefined && normalGweiNum !== null) {
-                  suggestedFeeRate = String(normalGweiNum);
-                  suggestedGasPriceGwei = String(normalGweiNum);
-                  suggestedGasPriceWei = BigInt(Math.round(normalGweiNum * 1e9)).toString();
-                  if (normalGweiNum === 0) {
-                    feeRateNote = 'Provider estimated 0 Gwei under low congestion';
-                  }
-                }
-              } else {
-                // UTXO chains: Blockchair returns suggested_transaction_fee_per_byte_sat (sat/byte)
-                const satPerByte = rawStats.suggested_transaction_fee_per_byte_sat;
-                if (satPerByte !== undefined && satPerByte !== null) {
-                  suggestedFeeRate = String(satPerByte);
-                }
-              }
-
-              const market: CoinMarketData = {
-                priceUsd: rawStats.market_price_usd ?? null,
-                change24h: rawStats.market_price_usd_change_24h_percentage ?? null,
-                source: 'Blockchair',
-                updatedAt: fetchedAt,
-                isStale: false,
-                status: 'available',
-                reason: null,
-              };
-
-              const network: ChainNetworkData = {
-                latestBlockNumber: rawStats.best_block_height ?? null,
-                latestBlockTimestamp,
-                blockDate,
-                suggestedGasPriceWei,
-                suggestedGasPriceGwei,
-                suggestedFeeRate,
-                feeUnit: config.feeUnit,
-                gasNote: feeRateNote,
-                feeRateNote,
-                source: 'Blockchair',
-                updatedAt: fetchedAt,
-                isStale: false,
-                status: 'available',
-                reason: null,
-              };
-
-              items.push({
-                chain,
-                name: config.name,
-                nativeSymbol: config.nativeSymbol,
-                family: config.family,
-                market,
-                network,
-              });
-            } else {
-              // Upstream data unavailable for this chain
-              items.push({
-                chain,
-                name: config.name,
-                nativeSymbol: config.nativeSymbol,
-                family: config.family,
-                market: {
-                  priceUsd: null,
-                  change24h: null,
-                  source: 'Blockchair',
-                  updatedAt: null,
-                  isStale: false,
-                  status: 'unavailable',
-                  reason: 'Stats temporarily unavailable from Blockchair',
-                },
-                network: {
-                  latestBlockNumber: null,
-                  latestBlockTimestamp: null,
-                  blockDate: null,
-                  suggestedFeeRate: null,
-                  feeUnit: config.feeUnit,
-                  source: 'Blockchair',
-                  updatedAt: null,
-                  isStale: false,
-                  status: 'unavailable',
-                  reason: 'Node status temporarily unavailable from Blockchair',
-                },
-              });
-            }
-          }
-
-          const envelope: CachedOverviewEnvelope = {
-            items,
-            fetchedAt,
-            expiresAt: Date.now() + OVERVIEW_BLOCKCHAIR_CACHE_TTL_SECONDS * 1000,
-          };
-
-          await this.cacheService.set(cacheKey, envelope, OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS);
-
-          return { envelope, isRateLimited: false };
-        } catch (err) {
-          this.logger.warn(`Overview batch fetch failed: ${(err as Error).message}`);
-          return { envelope: null, isRateLimited: false };
-        } finally {
-          this.inFlightBatchPromise = null;
+          const fallback = await this.blockchairClient.fetchChainStats(chain);
+          raw = fallback.data;
+          this.limited ||= fallback.isRateLimited || [402, 429].includes(fallback.statusCode);
+          if (this.limited) this.providerStatus = fallback.statusCode;
+        } catch {
+          /* Other networks remain usable when one fallback fails. */
         }
-      })();
+      }
+      const fresh = this.item(chain, raw, now);
+      received ||= [
+        ...marketKeys.map((k) => fresh.market?.[k]),
+        ...networkKeys.map((k) => fresh.network?.[k]),
+      ].some((v) => v != null);
+      const previous = cached?.items.find((item) => item.chain === chain);
+      fresh.market = this.merge(fresh.market!, previous?.market, marketKeys, now);
+      fresh.network = this.merge(fresh.network!, previous?.network, networkKeys, now);
+      items.push(fresh);
     }
+    this.retryAt = Date.now() + (this.limited ? 60000 : 15000);
+    if (!received) return this.present(cached, Boolean(cached));
+    const timestamps = items
+      .flatMap((item) => [item.market?.updatedAt, item.network?.updatedAt])
+      .filter((v): v is string => !!v);
+    const envelope: CachedOverviewEnvelope = {
+      items,
+      fetchedAt: timestamps.sort()[0] ?? now,
+      expiresAt: Date.now() + OVERVIEW_BLOCKCHAIR_CACHE_TTL_SECONDS * 1000,
+    };
+    this.lastValid = envelope;
+    await this.cacheService.set(
+      buildOverviewBlockchairCacheKey(),
+      envelope,
+      OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS,
+    );
+    return this.present(envelope, false);
+  }
 
-    const { envelope, isRateLimited } = await this.inFlightBatchPromise;
-
-    if (envelope) {
-      return {
-        data: envelope.items,
-        meta: {
-          fetchedAt: envelope.fetchedAt,
-          cached: false,
-        },
-      };
-    }
-
-    // 3. Live fetch failed: check if stale cached envelope is still usable within max stale window
-    if (cached) {
-      const cachedAgeMs = now - new Date(cached.fetchedAt).getTime();
-      if (cachedAgeMs <= OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS * 1000) {
-        this.logger.debug('Serving stale multichain overview within allowable window.');
-        const staleItems = cached.items.map((it) => ({
-          ...it,
-          market: it.market ? { ...it.market, isStale: true, status: 'stale' as const } : null,
-          network: it.network ? { ...it.network, isStale: true, status: 'stale' as const } : null,
-        }));
-
-        return {
-          data: staleItems,
-          meta: {
-            fetchedAt: cached.fetchedAt,
-            cached: true,
-          },
-        };
+  private merge<T extends Section>(
+    fresh: T,
+    previous: T | null | undefined,
+    keys: readonly string[],
+    now: string,
+  ): T {
+    fresh = { ...fresh };
+    const values = fresh as unknown as Record<string, unknown>;
+    const old = previous as unknown as Record<string, unknown> | undefined;
+    const fieldUpdatedAt: Record<string, string> = {};
+    const staleFields: string[] = [];
+    for (const key of keys) {
+      let stamp = fresh.fieldUpdatedAt?.[key] ?? (values[key] != null ? fresh.updatedAt : null);
+      if (values[key] == null && old?.[key] != null) {
+        stamp = previous?.fieldUpdatedAt?.[key] ?? previous?.updatedAt ?? null;
+        if (
+          stamp &&
+          Date.parse(now) - Date.parse(stamp) <= OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS * 1000
+        ) {
+          values[key] = old[key];
+          staleFields.push(key);
+        }
+      }
+      if (values[key] != null && stamp) {
+        const age = Date.parse(now) - Date.parse(stamp);
+        if (!Number.isFinite(age) || age > OVERVIEW_BLOCKCHAIR_MAX_STALE_SECONDS * 1000)
+          values[key] = null;
+        else {
+          fieldUpdatedAt[key] = stamp;
+          if (
+            (age >= OVERVIEW_BLOCKCHAIR_CACHE_TTL_SECONDS * 1000 ||
+              fresh.staleFields?.includes(key)) &&
+            !staleFields.includes(key)
+          )
+            staleFields.push(key);
+        }
       }
     }
+    const stamps = Object.values(fieldUpdatedAt).sort();
+    const isStale = staleFields.length > 0;
+    return {
+      ...fresh,
+      fieldUpdatedAt,
+      staleFields,
+      updatedAt: stamps[0] ?? null,
+      isStale,
+      status: stamps.length
+        ? isStale
+          ? 'stale'
+          : 'available'
+        : this.limited
+          ? 'rate_limited'
+          : 'unavailable',
+      reason: isStale
+        ? 'Refresh incomplete; showing preserved values with original timestamps.'
+        : !stamps.length
+          ? this.limited
+            ? 'Blockchair quota or rate limit reached.'
+            : 'Blockchair stats temporarily unavailable.'
+          : null,
+    };
+  }
 
-    // 4. Catastrophic fallback: generate empty items with error reason
-    const fallbackItems: NetworkOverviewItem[] = ACTIVE_CHAINS.map((chain) => {
-      const config = NETWORK_REGISTRY[chain];
-      const reason = isRateLimited
-        ? 'Blockchair API rate limit reached (HTTP 429)'
-        : 'Blockchair stats service temporarily unavailable';
-
+  private present(cached: CachedOverviewEnvelope | null, cacheHit: boolean): OverviewResponse {
+    const now = new Date().toISOString();
+    const data = ACTIVE_CHAINS.map((chain) => {
+      const item =
+        cached?.items.find((value) => value.chain === chain) ?? this.item(chain, null, now);
       return {
-        chain,
-        name: config.name,
-        nativeSymbol: config.nativeSymbol,
-        family: config.family,
-        market: {
-          priceUsd: null,
-          change24h: null,
-          source: 'Blockchair',
-          updatedAt: null,
-          isStale: false,
-          status: isRateLimited ? 'rate_limited' : 'unavailable',
-          reason,
-        },
-        network: {
-          latestBlockNumber: null,
-          latestBlockTimestamp: null,
-          blockDate: null,
-          suggestedFeeRate: null,
-          feeUnit: config.feeUnit,
-          source: 'Blockchair',
-          updatedAt: null,
-          isStale: false,
-          status: isRateLimited ? 'rate_limited' : 'unavailable',
-          reason,
-        },
+        ...item,
+        market: this.merge(
+          item.market ?? this.item(chain, null, now).market!,
+          null,
+          marketKeys,
+          now,
+        ),
+        network: this.merge(
+          item.network ?? this.item(chain, null, now).network!,
+          null,
+          networkKeys,
+          now,
+        ),
       };
     });
-
     return {
-      data: fallbackItems,
+      data,
       meta: {
-        fetchedAt: serverFetchedAt,
-        cached: false,
+        fetchedAt: cached?.fetchedAt ?? now,
+        cached: cacheHit,
+        isRateLimited: this.limited,
+        providerStatus: this.providerStatus,
+      },
+    };
+  }
+
+  private item(
+    chain: (typeof ACTIVE_CHAINS)[number],
+    raw: RawBlockchairStats | null,
+    now: string,
+  ): NetworkOverviewItem {
+    const config = NETWORK_REGISTRY[chain];
+    const number = (value: unknown): number | null =>
+      typeof value === 'number' && Number.isFinite(value) ? value : null;
+    const fee = number(
+      config.family === 'evm'
+        ? raw?.suggested_transaction_fee_gwei_options?.normal
+        : raw?.suggested_transaction_fee_per_byte_sat,
+    );
+    const parsed = raw?.best_block_time
+      ? Date.parse(raw.best_block_time.replace(' ', 'T').replace(/Z?$/, 'Z'))
+      : NaN;
+    const blockDate = Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+    const base = {
+      source: 'Blockchair',
+      updatedAt: raw ? now : null,
+      isStale: false,
+      status: 'available' as const,
+    };
+    return {
+      chain,
+      name: config.name,
+      nativeSymbol: config.nativeSymbol,
+      family: config.family,
+      market: {
+        ...base,
+        priceUsd: number(raw?.market_price_usd),
+        change24h: number(raw?.market_price_usd_change_24h_percentage),
+      },
+      network: {
+        ...base,
+        latestBlockNumber: number(raw?.best_block_height),
+        blockDate,
+        latestBlockTimestamp: blockDate ? Math.floor(parsed / 1000) : null,
+        suggestedFeeRate: fee === null ? null : String(fee),
+        feeUnit: config.feeUnit,
+        suggestedGasPriceGwei: config.family === 'evm' && fee !== null ? String(fee) : null,
+        suggestedGasPriceWei:
+          config.family === 'evm' && fee !== null ? BigInt(Math.round(fee * 1e9)).toString() : null,
+        feeRateNote:
+          config.family === 'evm' && fee === 0
+            ? 'Provider estimated 0 Gwei under low congestion'
+            : null,
       },
     };
   }
